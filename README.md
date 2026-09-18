@@ -6,10 +6,10 @@
 [![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-discord.py%20v2.3%2B-5865F2.svg)](https://discord.com)
-[![LLM](https://img.shields.io/badge/LLM-Zhipu%20AI%20GLM--4%20%2F%20GLM--5-orange.svg)](https://open.bigmodel.cn/)
+[![LLM](https://img.shields.io/badge/LLM-Zhipu%20AI%20GLM--5.3--plus-orange.svg)](https://open.bigmodel.cn/)
 [![Data Sources](https://img.shields.io/badge/Data%20Sources-arXiv%20q--fin%20%7C%20OpenAlex-purple.svg)](https://arxiv.org/archive/q-fin)
 
-*A production-grade Python system and 24/7 Discord bot that continuously harvests cutting-edge and classic quantitative finance papers, evaluates mathematical depth and alpha novelty with **GLM**, downloads full-text PDFs with polite multi-threading, tokenizes documents, builds an interactive **Quantitative Knowledge Graph**, and broadcasts the top curated pick daily.*
+*A production-grade Python system and 24/7 Discord bot that continuously harvests cutting-edge and classic quantitative finance papers, evaluates mathematical depth and alpha novelty with **GLM-5.3-Plus** (dynamically configurable), downloads full-text PDFs with polite multi-threading, tokenizes documents, builds an interactive **Quantitative Knowledge Graph**, and broadcasts the top curated pick daily.*
 
 [Features](#-key-features) • [Architecture](#-architecture) • [One-Click Setup](#-one-click-setup) • [Configuration](#-configuration) • [Discord Commands](#-discord-commands) • [Push to GitHub](#-how-to-push-to-github)
 
@@ -25,6 +25,7 @@
   - [Discord Bot Setup](#1-discord-bot-setup)
   - [GLM API Key Setup](#2-glm-api-key-setup)
 - [🤖 Discord Commands](#-discord-commands)
+- [🖥️ Interactive Dashboard & 5-Option Menu](#️-interactive-terminal-dashboard--5-option-menu)
 - [💻 CLI Usage](#-cli-usage)
 - [🕸 Interactive Knowledge Graph](#-interactive-knowledge-graph)
 - [📤 How to Push to GitHub](#-how-to-push-to-github)
@@ -46,7 +47,7 @@
   - `econ.EM` (Econometrics)
 - **OpenAlex Index**: Surfaces classic, high-impact foundational literature (Black-Scholes, Rough Volatility, Pairs Trading, Limit Order Book Dynamics, Hawkes Processes).
 
-### 2. GLM Quantitative Evaluation Engine
+### 2. GLM 5.3 Flash Quantitative Evaluation Engine
 - Evaluates abstracts through the persona of a **Director of Quantitative Research at a Systematic Hedge Fund**.
 - Scores papers strictly on **mathematical rigor, theoretical validity, microstructure insight, and alpha potential** (filtering out trivial or overfitted backtests).
 - Generates structured JSON:
@@ -88,7 +89,7 @@ graph TD
 
     subgraph Evaluation & Processing
         SM --> DB[(SQLite Database\npapers.db)]
-        SM --> GLM[GLM Abstract Evaluator\nglm-4-plus / glm-5]
+        SM --> GLM[GLM Abstract Evaluator\nglm-5.3-plus]
         GLM -->|Score & Alpha Analysis| DB
         DB -->|Candidate Batch| PDF[Polite Multi-Threaded\nPDF Downloader]
         PDF -->|Jitter & Backoff| TOK[tiktoken BPE Tokenizer]
@@ -117,7 +118,7 @@ Launch the application directly using the automated startup scripts (which check
 ```cmd
 start.bat
 ```
-*(Or pass arguments: `start.bat --daily` or `start.bat --search "limit order books"`)*
+*(Or pass arguments: `start.bat --bulk 50` or `start.bat --search "limit order books"`)*
 
 ### Windows (PowerShell)
 ```powershell
@@ -141,53 +142,32 @@ cp .env.example .env
 
 Edit `.env` with your API credentials:
 ```env
+# Discord Bot Credentials (optional on disk; can be entered in-memory)
 DISCORD_TOKEN=your_discord_bot_token_here
 DISCORD_CHANNEL_ID=your_target_discord_channel_id_here
 
-GLM_API_KEY=your_glm_api_key_here
+# GLM Configuration (Note: API keys can be entered safely in RAM upon startup)
+GLM_API_KEY=
 GLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4/
-GLM_MODEL=glm-4-plus
+GLM_MODEL=glm-5.3-plus
 ```
 
 ### 1. Discord Bot Setup
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and create a **New Application**.
 2. Navigate to the **Bot** tab:
-   - Click **Reset Token** and copy the token to `DISCORD_TOKEN` in `.env`.
+   - Click **Reset Token** and copy the token to `DISCORD_TOKEN` in `.env` (or input securely via interactive menu).
    - Enable **Message Content Intent** under *Privileged Gateway Intents*.
 3. Go to **OAuth2 -> URL Generator**:
    - Scopes: `bot`, `applications.commands`
    - Permissions: `Send Messages`, `Embed Links`, `Attach Files`, `Read Message History`
    - Open the generated URL in your browser to invite the bot to your server.
-4. Copy the Channel ID where you want daily papers posted into `DISCORD_CHANNEL_ID` in `.env`.
+4. Copy the Channel ID where you want daily papers posted into `DISCORD_CHANNEL_ID`.
 
-### 2. GLM API Key Setup
+### 2. GLM API Key Setup & Zero-Disk-Leak Security
 - Obtain an API key from [Zhipu AI BigModel Platform](https://open.bigmodel.cn/).
-- The client also supports any OpenAI-compatible proxy by updating `GLM_BASE_URL`.
+- **Memory-Only Session Mode (Recommended)**: When launching `start.bat` or `python main.py`, the engine prompts for your key with masked input and keeps it strictly in volatile memory (RAM). It is **never saved to disk or .env**, keeping your local repository 100% clean and immune to accidental leaks when pushing code to GitHub.
+- **Dynamic Model Selection**: By default, the engine uses **`glm-5.3-plus`**. Model names are never hardcoded; you can specify any model via `GLM_MODEL` environment variable, `config.yaml`, CLI flag (`--model`), or menu option `[5]`.
 - *Note: If no API key is provided, the system falls back to an intelligent heuristic mock analyzer so you can test the entire pipeline locally without cost.*
-
-### 3. Customizing Curation Settings (`config.yaml`)
-You can fine-tune research topics, score thresholds, and concurrency in `config.yaml`:
-```yaml
-scheduler:
-  daily_interval_hours: 24
-  candidates_per_fetch: 15
-  top_papers_to_post: 1
-
-downloader:
-  max_workers: 3              # Parallel threads (polite limit for arXiv)
-  request_delay_seconds: 1.5  # Spacing between calls with jitter
-  max_retries: 3              # Retries with exponential backoff
-  download_all_candidates: true
-
-filters:
-  min_score: 75
-  interests:
-    - "Market Microstructure, Limit Order Books & High-Frequency Trading"
-    - "Statistical Arbitrage, Machine Learning & Quantitative Alpha Signals"
-    - "Stochastic Volatility Models, Rough Volatility & Exotic Derivatives Pricing"
-    - "Portfolio Optimization, Factor Investing & Risk Parity"
-    - "Reinforcement Learning for Trade Execution and Market Making"
-```
 
 ---
 
@@ -204,11 +184,64 @@ filters:
 
 ---
 
+## 🖥️ Interactive Terminal Dashboard & 5-Option Menu
+
+When you launch `start.bat` (Windows) or `./start.sh` (Linux/macOS), you are presented with a live, comprehensive quantitative finance dashboard:
+
+```
+╔════════════════════════════════════════════════════════════════════════════╗
+║      📈 QUANTITATIVE FINANCE RESEARCH ENGINE & AUTONOMOUS ARCHIVE          ║
+╚════════════════════════════════════════════════════════════════════════════╝
+ 📡 Status: Discord Bot: ✅ Configured | Target Channel: ✅ ID: 1234567890
+            GLM Model:   ✅ Live (glm-5.3-plus) [🔒 Session RAM - 0 Disk Writes]
+──────────────────────────────────────────────────────────────────────────────
+ 📚 Corpus Metrics:
+    Total Ingested: 1,420 papers  |  Evaluated: 1,420  |  PDFs Tokenized: 380  |  Tokens: 4,120,400
+
+ 🏷️  Category Breakdown (7 categories in database):
+    • q-fin.TR (Trading & Market Microstructure)       :   420 papers
+    • q-fin.PM (Portfolio Management)                  :   310 papers
+    • q-fin.CP (Computational Finance)                 :   250 papers
+    • q-fin.RM (Risk Management)                       :   180 papers
+    • q-fin.PR (Pricing of Securities)                 :   140 papers
+    • q-fin.ST (Statistical Finance)                   :    80 papers
+    • OpenAlex / Multi-Disciplinary Topics             :    40 papers
+
+ 🎯 Alpha & Quality Score Tiers (Model: glm-5.3-plus):
+    • 💎 Alpha / Elite  (Score >= 85):    84 papers [Priority Discord broadcast candidates]
+    • ⚡ Notable Alpha  (Score 70-84):   312 papers [High empirical/algorithmic depth]
+    • ⚪ Screened Out   (Score < 70) : 1,024 papers [Archived with lower alpha score]
+    • 📊 Mean Quality Score: 68.4 / 100
+
+ 🧠 Top Alpha Drivers & Concepts: optimal execution (18), order flow toxicity (15), deep reinforcement learning (14)
+══════════════════════════════════════════════════════════════════════════════
+  [1] 🤖 Launch 24/7 Discord Bot        (Scheduled daily posts & slash commands)
+  [2] ⚡ Bulk Harvest Engine            (Ingest 50 to 10,000+ papers in succession with GLM)
+  [3] 🔍 Search & Evaluate Quant Papers (On-demand topic search across arXiv & OpenAlex)
+  [4] 🌐 Knowledge Graph & Analytics    (Open interactive HTML graph & corpus stats)
+  [5] ⚙️  API Credentials & Bot Settings (Configure Tokens, GLM Key, Channel, Interests)
+  [0] 🚪 Exit
+══════════════════════════════════════════════════════════════════════════════
+```
+
+### ⚡ Bulk Succession Harvest Engine
+Option `[2]` allows you to continuously ingest and evaluate tens, hundreds, or thousands of papers in succession:
+- Paginates through arXiv query offsets (`start=0, 50, 100, 150...`) across all `q-fin` categories with polite 3.0s delays to respect arXiv rate limits.
+- Paginates through OpenAlex pages for classic/high-citation literature.
+- **Feeds each abstract directly to `glm-5.3-plus` (or your chosen model)** to evaluate alpha potential and math rigor in real time.
+- Automatically queues accepted papers ($\ge 70$ score or custom threshold) for polite multithreaded PDF downloading and BPE tokenization.
+- **Safe Interruption**: Press `Ctrl+C` at any point during a 5,000-paper harvest; the engine cleanly saves all evaluated papers into SQLite with zero corruption.
+
+---
+
 ## 💻 CLI Usage
 
-The system can run headlessly without Discord via `main.py`:
+The system can also run directly from the command line or via cron tasks:
 
 ```bash
+# Ingest and screen 250 papers in continuous succession with GLM 5.3 Flash
+python main.py --bulk 250
+
 # Run a single daily harvest cycle immediately
 python main.py --daily
 

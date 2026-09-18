@@ -141,5 +141,165 @@ class TestPaperPipeline(unittest.TestCase):
         results = downloader.download_batch([])
         self.assertEqual(results, {})
 
+    def test_database_detailed_stats(self):
+        """Test that get_detailed_stats provides category breakdown, score distribution, and top concepts."""
+        p1 = self.db.save_paper({
+            "external_id": "test:quant_1",
+            "source": "arxiv",
+            "title": "Stochastic Volatility in Rough Heston Models",
+            "authors": ["M. Gatheral"],
+            "abstract": "Analysis of fractional Brownian motion in rough volatility.",
+            "category": "q-fin.PR"
+        })
+        self.db.save_evaluation(p1, {
+            "score": 92,
+            "hook": "Rough volatility breakthrough",
+            "breakthrough_summary": "Fractional Heston model",
+            "takeaway": "Direct alpha in volatility surfaces",
+            "concepts": ["rough heston", "fractional brownian motion"]
+        })
+
+        p2 = self.db.save_paper({
+            "external_id": "test:quant_2",
+            "source": "arxiv",
+            "title": "High Frequency Market Making",
+            "authors": ["A. Avellaneda"],
+            "abstract": "Optimal inventory control and quoting.",
+            "category": "q-fin.TR"
+        })
+        self.db.save_evaluation(p2, {
+            "score": 75,
+            "hook": "Avellaneda-Stoikov market making",
+            "breakthrough_summary": "Closed-form quotes",
+            "takeaway": "Optimal bid-ask spread calculation",
+            "concepts": ["market making", "inventory risk"]
+        })
+
+        stats = self.db.get_detailed_stats()
+        self.assertEqual(stats["total_papers"], 2)
+        self.assertEqual(stats["evaluated_papers"], 2)
+        self.assertIn("q-fin.PR", stats["categories"])
+        self.assertIn("q-fin.TR", stats["categories"])
+        self.assertEqual(stats["categories"]["q-fin.PR"], 1)
+        self.assertEqual(stats["categories"]["q-fin.TR"], 1)
+        self.assertEqual(stats["score_distribution"]["elite"], 1)
+        self.assertEqual(stats["score_distribution"]["notable"], 1)
+        self.assertEqual(stats["score_distribution"]["screened"], 0)
+        self.assertEqual(stats["score_distribution"]["avg_score"], 83.5)
+
+    def test_bulk_harvest_logic(self):
+        """Test bulk harvest candidate streaming and evaluation logic."""
+        from pipeline import PaperPipeline
+        pipeline = PaperPipeline()
+        # Mock stream_candidates to return 2 sample papers
+        mock_candidates = [
+            {
+                "external_id": "mock:1",
+                "source": "arxiv",
+                "title": "Deep RL for Execution",
+                "authors": ["Quant A"],
+                "abstract": "Fast execution with deep Q-networks.",
+                "category": "q-fin.TR",
+                "pdf_url": ""
+            },
+            {
+                "external_id": "mock:2",
+                "source": "openalex",
+                "title": "Covariance Estimation in High Dimensions",
+                "authors": ["Quant B"],
+                "abstract": "Shrinkage methods for portfolio risk.",
+                "category": "q-fin.PM",
+                "pdf_url": ""
+            }
+        ]
+        pipeline.scraper_manager.stream_candidates = lambda target_count, search_query="": iter(mock_candidates)
+        
+        result = pipeline.run_bulk_harvest(target_count=2, min_score=70, download_pdfs=False)
+        self.assertEqual(result["screened"], 2)
+        self.assertGreaterEqual(result["accepted"], 0)
+
+    def test_glm_client_model_name_and_security(self):
+        """Verify GLMClient dynamic model resolution, model_name property/setter, and masked key security."""
+        client = GLMClient()
+        self.assertTrue(hasattr(client, "model_name"))
+        self.assertEqual(client.model_name, client.model)
+        self.assertIn("5.3", client.model_name)
+
+        # Dynamic setter with alias normalization
+        client.model_name = "glm-5.3-plus"
+        self.assertEqual(client.model_name, "glm-5.3")
+        self.assertEqual(client.model, "glm-5.3")
+
+        # Masked key security (never reveals full key)
+        client.api_key = "mock_secret_key_for_testing_5678"
+        masked = client.masked_key
+        self.assertNotIn("secret_key", masked)
+        self.assertTrue(masked.startswith("mock"))
+        self.assertTrue(masked.endswith("5678"))
+
+        # Empty / placeholder key handling
+        client.api_key = ""
+        self.assertEqual(client.masked_key, "Not Set (Heuristic Mode)")
+        self.assertFalse(client.is_configured())
+
+    def test_arxiv_scraper_url_encoding(self):
+        """Ensure arxiv query URLs use urlencode without control characters or raw spaces."""
+        from scraper.arxiv_scraper import ArxivScraper
+        scraper = ArxivScraper()
+        recorded_url = []
+        def mock_urlopen(req, timeout=15, context=None):
+            recorded_url.append(req.full_url)
+            class MockResp:
+                def read(self):
+                    return b"<feed></feed>"
+                def __enter__(self):
+                    return self
+                def __exit__(self, *args):
+                    pass
+            return MockResp()
+
+        import urllib.request
+        orig = urllib.request.urlopen
+        urllib.request.urlopen = mock_urlopen
+        try:
+            scraper.search(categories=["q-fin.TR", "q-fin.PM"])
+            self.assertTrue(len(recorded_url) > 0)
+            self.assertNotIn(" ", recorded_url[0])
+            self.assertIn("cat%3Aq-fin.TR", recorded_url[0])
+        finally:
+            urllib.request.urlopen = orig
+
+    def test_safe_urlopen_ssl_fallback(self):
+        """Verify safe_urlopen catches CERTIFICATE_VERIFY_FAILED and retries with unverified fallback context."""
+        from scraper.arxiv_scraper import safe_urlopen
+        import urllib.error
+        attempts = []
+        def mock_ssl_urlopen(req, timeout=15, context=None):
+            attempts.append(context)
+            if len(attempts) == 1:
+                raise urllib.error.URLError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate")
+            class MockResp:
+                def read(self):
+                    return b"OK"
+                def __enter__(self):
+                    return self
+                def __exit__(self, *args):
+                    pass
+            return MockResp()
+
+        import urllib.request
+        orig = urllib.request.urlopen
+        urllib.request.urlopen = mock_ssl_urlopen
+        try:
+            req = urllib.request.Request("https://example.com")
+            resp = safe_urlopen(req)
+            self.assertEqual(resp.read(), b"OK")
+            self.assertEqual(len(attempts), 2)
+        finally:
+            urllib.request.urlopen = orig
+
 if __name__ == "__main__":
     unittest.main()
+
+
+

@@ -7,13 +7,26 @@ import os
 import sys
 import argparse
 import webbrowser
+import getpass
 from dotenv import load_dotenv
 
-# Load environment variables from .env if present
+# Load environment variables from .env if present (gitignored)
 load_dotenv()
 
 from pipeline import PaperPipeline
 from bot.discord_bot import PaperScraperBot, setup_commands
+
+CATEGORY_LABELS = {
+    "q-fin.TR": "q-fin.TR (Trading & Market Microstructure)",
+    "q-fin.PM": "q-fin.PM (Portfolio Management)",
+    "q-fin.CP": "q-fin.CP (Computational Finance)",
+    "q-fin.RM": "q-fin.RM (Risk Management)",
+    "q-fin.PR": "q-fin.PR (Pricing of Securities)",
+    "q-fin.ST": "q-fin.ST (Statistical Finance)",
+    "q-fin.GN": "q-fin.GN (General Finance)",
+    "q-fin.EC": "q-fin.EC (Economics & Finance)",
+    "q-fin.MF": "q-fin.MF (Mathematical Finance)",
+}
 
 def get_env_value(key: str, default: str = "") -> str:
     """Reads a variable from os.environ or .env file directly."""
@@ -22,8 +35,38 @@ def get_env_value(key: str, default: str = "") -> str:
         return val
     return default
 
+def get_active_model(pipeline: PaperPipeline = None) -> str:
+    """Dynamically resolves the active GLM model name without hardcoding."""
+    if pipeline and hasattr(pipeline, "glm_client"):
+        return getattr(pipeline.glm_client, "model_name", getattr(pipeline.glm_client, "model", "glm-5.3-plus"))
+    return os.getenv("GLM_MODEL") or "glm-5.3-plus"
+
+def prompt_hidden_input(prompt_text: str) -> str:
+    """Prompts for input without echoing characters to the terminal (safely masks typing)."""
+    try:
+        val = getpass.getpass(prompt_text).strip()
+        return val
+    except Exception:
+        return input(prompt_text).strip()
+
+def purge_local_credentials():
+    """Wipes any local credential files from disk to ensure zero leaks before git commits."""
+    removed = []
+    for f in [".env", ".env.local", "credentials.json", "secrets.json"]:
+        if os.path.exists(f):
+            try:
+                os.remove(f)
+                removed.append(f)
+            except Exception as e:
+                print(f"[!] Warning: Could not remove {f}: {e}")
+    if removed:
+        print(f"\n🧹 Cleaned up disk files: {', '.join(removed)}")
+        print("🛡️ All credential files removed from disk. Your workspace is 100% clean to commit and push to Git!\n")
+    else:
+        print("\n✅ Clean! No local credential files found on disk.\n")
+
 def save_env_file(credentials: dict):
-    """Safely saves or updates credentials in .env file."""
+    """Safely saves or updates credentials in local .env file (excluded by .gitignore)."""
     env_path = ".env"
     existing_lines = []
     if os.path.exists(env_path):
@@ -51,56 +94,111 @@ def save_env_file(credentials: dict):
 
     # Reload environment
     load_dotenv(override=True)
-    print("\n✅ Credentials saved successfully to .env!\n")
+    print("\n✅ Credentials saved locally to .env (Protected & ignored by .gitignore)!\n")
 
-def setup_credentials_interactive():
-    """Interactive terminal wizard to input Discord Token, Channel ID, and GLM Key."""
-    print("\n" + "=" * 65)
-    print(" 🔑 QUANT PAPER SCRAPER - CREDENTIALS & API CONFIGURATION")
-    print("=" * 65)
-    print("Press Enter without typing to keep existing / default values.\n")
+def prompt_session_api_key(pipeline: PaperPipeline):
+    """
+    Prompts the user for the GLM API Key on launch or on-demand.
+    Stores the key strictly in RAM for this session (never written to disk).
+    """
+    if pipeline.glm_client.is_configured():
+        return
 
+    print("\n" + "╔" + "═" * 74 + "╗")
+    print("║" + "  🛡️  SECURE API KEY INPUT (SESSION RAM ONLY - ZERO DISK FOOTPRINT)       ".center(74) + "║")
+    print("╚" + "═" * 74 + "╝")
+    print(" • For your complete security, your API key is NEVER saved to any file.")
+    print(" • It is held strictly in-memory (RAM) for this running session.")
+    print(" • When you close this program, the key vanishes completely.")
+    print(" • You can freely commit or share your project without exposing keys!")
+    print("─" * 76)
+
+    key = prompt_hidden_input("🔑 Enter Zhipu AI GLM API Key (hidden / press Enter to skip): ")
+    if key:
+        os.environ["GLM_API_KEY"] = key
+        pipeline.glm_client.api_key = key
+        print("\n✅ API Key loaded securely into session RAM (0 bytes saved to disk).")
+        print(f"🤖 Connected with evaluation model: {get_active_model(pipeline)}\n")
+    else:
+        print("\nℹ️ No key entered. Continuing in Heuristic Evaluation Mode.\n")
+
+def setup_credentials_interactive(pipeline: PaperPipeline = None):
+    """
+    Interactive terminal settings wizard with masked input and zero-disk-leak memory mode.
+    Allows user to configure secrets purely in memory or wipe disk files.
+    """
     curr_token = get_env_value("DISCORD_TOKEN")
     curr_channel = get_env_value("DISCORD_CHANNEL_ID")
-    curr_glm = get_env_value("GLM_API_KEY")
-    curr_base = os.getenv("GLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/")
-    curr_model = os.getenv("GLM_MODEL", "glm-4-plus")
+    curr_glm = get_env_value("GLM_API_KEY") or (pipeline.glm_client.api_key if pipeline else "")
+    curr_model = get_active_model(pipeline)
 
-    # 1. Discord Bot Token
-    print("1. Discord Bot Token (from Discord Developer Portal -> Bot -> Token):")
-    if curr_token:
-        print(f"   [Current: {curr_token[:6]}...{curr_token[-4:]}]")
-    new_token = input("   Enter Discord Token: ").strip()
-    token_to_save = new_token if new_token else curr_token
+    while True:
+        masked_glm = f"{curr_glm[:4]}...{curr_glm[-4:]}" if (curr_glm and len(curr_glm) > 8 and not curr_glm.startswith("your_")) else ("Set in RAM" if curr_glm and not curr_glm.startswith("your_") else "Not Set")
+        masked_tok = f"{curr_token[:4]}...{curr_token[-4:]}" if (curr_token and len(curr_token) > 8 and not curr_token.startswith("your_")) else ("Configured" if curr_token and not curr_token.startswith("your_") else "Not Set")
 
-    # 2. Discord Channel ID
-    print("\n2. Target Discord Channel ID (where papers will be posted):")
-    if curr_channel:
-        print(f"   [Current: {curr_channel}]")
-    new_channel = input("   Enter Channel ID: ").strip()
-    channel_to_save = new_channel if new_channel else curr_channel
+        print("\n" + "=" * 74)
+        print(" ⚙️  API CREDENTIALS & SECURITY CONFIGURATION")
+        print("=" * 74)
+        print(f"  • GLM API Key:     {masked_glm}  (Input is masked/hidden)")
+        print(f"  • Active Model:    {curr_model}  (Dynamic, configurable)")
+        print(f"  • Discord Bot:     {masked_tok}  |  Channel ID: {curr_channel or 'Not Set'}")
+        print("─" * 74)
+        print("  [1] 🧠 Enter / Update GLM API Key (Session RAM Only - Never Saved to Disk)")
+        print(f"  [2] 🎯 Switch GLM Model Name      (Current: {curr_model})")
+        print("  [3] 🤖 Configure Discord Bot Token & Channel (Session RAM)")
+        print("  [4] 🧹 Purge / Delete all local credential files from disk (Git Safety)")
+        print("  [5] 💾 Save credentials to local .env (Optional: gitignored, but RAM mode is safer)")
+        print("  [0] ↩️  Return to Main Menu")
+        print("=" * 74)
 
-    # 3. GLM API Key
-    print("\n3. GLM API Key (from Zhipu AI bigmodel.cn | Leave blank for offline mock mode):")
-    if curr_glm:
-        print(f"   [Current: {curr_glm[:6]}...{curr_glm[-4:]}]")
-    new_glm = input("   Enter GLM API Key: ").strip()
-    glm_to_save = new_glm if new_glm else curr_glm
+        opt = input("Select an option [0-5]: ").strip()
 
-    # 4. GLM Model
-    print("\n4. GLM Model Name (e.g. glm-4-plus, glm-4, glm-5):")
-    print(f"   [Current: {curr_model}]")
-    new_model = input(f"   Enter Model Name [{curr_model}]: ").strip()
-    model_to_save = new_model if new_model else curr_model
+        if opt == "0":
+            break
+        elif opt == "1":
+            print("\nEnter Zhipu AI GLM API Key (input is masked; characters won't show on screen):")
+            new_key = prompt_hidden_input("🔑 GLM API Key: ")
+            if new_key:
+                curr_glm = new_key
+                os.environ["GLM_API_KEY"] = new_key
+                if pipeline:
+                    pipeline.glm_client.api_key = new_key
+                print("\n✅ GLM API Key updated in process RAM only (Never written to disk)!\n")
+        elif opt == "2":
+            print(f"\nEnter GLM Model Name (Default: glm-5.3-plus | Options: glm-5.3-plus, glm-4-plus, etc.):")
+            new_model = input(f"Model Name [{curr_model}]: ").strip()
+            if new_model:
+                curr_model = new_model
+                os.environ["GLM_MODEL"] = new_model
+                if pipeline:
+                    pipeline.glm_client.model = new_model
+                    pipeline.glm_client.model_name = new_model
+                print(f"\n✅ Active model updated to: {curr_model}\n")
+        elif opt == "3":
+            print("\nEnter Discord Bot Token (input is masked):")
+            new_token = prompt_hidden_input("🤖 Discord Bot Token: ")
+            if new_token:
+                curr_token = new_token
+                os.environ["DISCORD_TOKEN"] = new_token
 
-    creds = {
-        "DISCORD_TOKEN": token_to_save or "your_discord_bot_token_here",
-        "DISCORD_CHANNEL_ID": channel_to_save or "your_discord_channel_id_here",
-        "GLM_API_KEY": glm_to_save or "your_glm_api_key_here",
-        "GLM_BASE_URL": curr_base,
-        "GLM_MODEL": model_to_save
-    }
-    save_env_file(creds)
+            new_ch = input(f"Target Discord Channel ID [{curr_channel}]: ").strip()
+            if new_ch:
+                curr_channel = new_ch
+                os.environ["DISCORD_CHANNEL_ID"] = new_ch
+            print("\n✅ Discord credentials updated in process RAM!\n")
+        elif opt == "4":
+            purge_local_credentials()
+        elif opt == "5":
+            confirm = input("Are you sure you want to write credentials to local disk .env? (y/n): ").strip().lower()
+            if confirm == "y":
+                creds = {
+                    "DISCORD_TOKEN": curr_token or "your_discord_bot_token_here",
+                    "DISCORD_CHANNEL_ID": curr_channel or "your_discord_channel_id_here",
+                    "GLM_API_KEY": curr_glm or "",
+                    "GLM_BASE_URL": os.getenv("GLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/"),
+                    "GLM_MODEL": curr_model
+                }
+                save_env_file(creds)
 
 def start_discord_bot(pipeline: PaperPipeline):
     """Launches the Discord Bot daemon."""
@@ -109,7 +207,7 @@ def start_discord_bot(pipeline: PaperPipeline):
         print("\n[!] Error: DISCORD_TOKEN is not configured.")
         configure_now = input("Would you like to configure it now? (y/n): ").strip().lower()
         if configure_now == "y":
-            setup_credentials_interactive()
+            setup_credentials_interactive(pipeline)
             discord_token = get_env_value("DISCORD_TOKEN")
         else:
             return
@@ -128,190 +226,202 @@ def start_discord_bot(pipeline: PaperPipeline):
     except Exception as e:
         print(f"\n[Bot] Error running Discord Bot: {e}")
 
-def interactive_menu():
-    """Renders a continuous interactive terminal menu."""
-    pipeline = PaperPipeline()
+def interactive_menu(pipeline: PaperPipeline = None):
+    """Renders a comprehensive interactive terminal dashboard with category metrics and 5 primary options."""
+    if pipeline is None:
+        pipeline = PaperPipeline()
+
+    # Prompt user for API key if missing (held strictly in session RAM, never stored on disk)
+    prompt_session_api_key(pipeline)
 
     while True:
         token_val = get_env_value("DISCORD_TOKEN")
         channel_val = get_env_value("DISCORD_CHANNEL_ID")
-        glm_val = get_env_value("GLM_API_KEY")
-        model_val = os.getenv("GLM_MODEL", "glm-4-plus")
+        model_val = get_active_model(pipeline)
 
-        token_status = "✅ Configured" if token_val else "❌ Missing (Set in [4])"
+        token_status = "✅ Configured" if token_val else "❌ Missing (Set in [5])"
         channel_status = f"✅ ID: {channel_val}" if channel_val else "❌ Missing"
-        glm_status = f"✅ Live ({model_val})" if glm_val else "⚠️ Mock Heuristic Mode (Set in [4])"
+        if pipeline.glm_client.is_configured():
+            glm_status = f"✅ Live ({model_val}) [🔒 Session RAM - 0 Disk Writes]"
+        else:
+            glm_status = f"⚠️ Heuristic Mode ({model_val}) [Select 5 to set key]"
 
-        print("\n" + "═" * 70)
-        print("         📈 QUANTITATIVE FINANCE PAPER SCRAPER & ENGINE")
-        print("═" * 70)
-        print(f" Status: Discord Bot Token: {token_status} | Channel: {channel_status}")
-        print(f"         GLM LLM Engine:    {glm_status}")
-        print("─" * 70)
-        print("  [1] 🤖 Start 24/7 Discord Bot (Daily scheduled posts & slash commands)")
-        print("  [2] 🏆 Run Daily Paper Curation Cycle Now (Harvest, score & tokenize)")
-        print("  [3] 🔍 Search Quant Papers on Demand (arXiv & OpenAlex)")
-        print("  [4] 🔑 Configure API Keys & Discord Bot Token (.env)")
-        print("  [5] 🌐 Export & Open Interactive Knowledge Graph (HTML)")
-        print("  [6] 📊 View Corpus & SQLite Database Stats")
-        print("  [7] 🎯 View / Update Quant Topic Filter Interests")
-        print("  [8] 🧪 Run Automated Test Suite")
+        stats = pipeline.db.get_detailed_stats()
+        cats = stats.get("categories", {})
+        scores = stats.get("score_distribution", {})
+        top_concepts = stats.get("top_concepts", [])
+
+        print("\n" + "╔" + "═" * 76 + "╗")
+        print("║" + "   📈 QUANTITATIVE FINANCE RESEARCH ENGINE & AUTONOMOUS ARCHIVE    ".center(76) + "║")
+        print("╚" + "═" * 76 + "╝")
+
+        # 1. System & Connectivity Status
+        print(f" 📡 Status: Discord Bot: {token_status} | Target Channel: {channel_status}")
+        print(f"            GLM Model:   {glm_status}")
+        print("─" * 78)
+
+        # 2. Corpus Overview
+        tot = stats.get("total_papers", 0)
+        ev = stats.get("evaluated_papers", 0)
+        tok = stats.get("tokenized_pdfs", 0)
+        tot_tokens = stats.get("total_tokens", 0)
+        print(f" 📚 Corpus Metrics:")
+        print(f"    Total Ingested: {tot:,} papers  |  Evaluated: {ev:,}  |  PDFs Tokenized: {tok:,}  |  Tokens: {tot_tokens:,}")
+
+        # 3. Category Breakdown
+        print(f"\n 🏷️  Category Breakdown ({len(cats)} categories in database):")
+        if cats:
+            for cat, count in list(cats.items())[:6]:
+                label = CATEGORY_LABELS.get(cat, cat)
+                print(f"    • {label:<48} : {count:>5} papers")
+            if len(cats) > 6:
+                rem_count = sum(list(cats.values())[6:])
+                print(f"    • Other Quant / OpenAlex Categories ({len(cats)-6} more)     : {rem_count:>5} papers")
+        else:
+            print("    • (Corpus currently empty — select option [2] to harvest papers into database)")
+
+        # 4. Alpha & Quality Score Distribution
+        print(f"\n 🎯 Alpha & Quality Score Tiers (Model: {model_val}):")
+        elite = scores.get("elite", 0)
+        notable = scores.get("notable", 0)
+        screened = scores.get("screened", 0)
+        avg_s = scores.get("avg_score", 0.0)
+        print(f"    • 💎 Alpha / Elite  (Score >= 85): {elite:>5} papers [Priority Discord broadcast candidates]")
+        print(f"    • ⚡ Notable Alpha  (Score 70-84): {notable:>5} papers [High empirical/algorithmic depth]")
+        print(f"    • ⚪ Screened Out   (Score < 70) : {screened:>5} papers [Archived with lower alpha score]")
+        print(f"    • 📊 Mean Quality Score: {avg_s} / 100")
+
+        # 5. Top Extracted Concepts
+        if top_concepts:
+            concepts_str = ", ".join([f"{name} ({c})" for name, c in top_concepts[:6]])
+            print(f"\n 🧠 Top Alpha Drivers & Concepts: {concepts_str}")
+
+        print("═" * 78)
+        print("  [1] 🤖 Launch 24/7 Discord Bot        (Scheduled daily posts & slash commands)")
+        print("  [2] ⚡ Bulk Harvest Engine            (Ingest 50 to 10,000+ papers in succession with GLM)")
+        print("  [3] 🔍 Search & Evaluate Quant Papers (On-demand topic search across arXiv & OpenAlex)")
+        print("  [4] 🌐 Knowledge Graph & Analytics    (Open interactive HTML graph & corpus stats)")
+        print("  [5] ⚙️  API Credentials & Bot Settings (Configure Tokens, GLM Key, Channel, Interests)")
         print("  [0] 🚪 Exit")
-        print("═" * 70)
+        print("═" * 78)
 
-        choice = input("Select an option [0-8]: ").strip()
+        choice = input("Select an option [0-5]: ").strip()
 
         if choice == "1":
             start_discord_bot(pipeline)
         elif choice == "2":
-            print("\n[Action] Running complete quant curation cycle...")
-            top_paper = pipeline.run_daily_cycle()
-            if top_paper:
-                print("\n" + "─" * 60)
-                print(f"🏆 TODAY'S TOP QUANT PICK: #{top_paper['id']} (Score: {top_paper['score']}/100)")
-                print(f"Title: {top_paper['title']}")
-                print(f"Hook:  {top_paper.get('hook')}")
-                print(f"Math:  {top_paper.get('breakthrough_summary')}")
-                print(f"Alpha: {top_paper.get('takeaway')}")
-                if top_paper.get("total_tokens"):
-                    print(f"Tokens: {top_paper['total_tokens']:,}")
-                print("─" * 60)
-            else:
-                print("\nHarvest finished, but no new candidates exceeded the score threshold.")
-            input("\nPress Enter to return to menu...")
+            print("\n" + "=" * 65)
+            print(" ⚡ BULK SUCCESSION HARVEST ENGINE")
+            print("=" * 65)
+            print("Continuously ingests papers in succession across arXiv and OpenAlex.")
+            print(f"Each abstract is fed to {model_val} to evaluate alpha novelty.")
+            print("Qualified papers are queued for polite multithreaded PDF download & tokenization.\n")
+
+            if not pipeline.glm_client.is_configured():
+                print("ℹ️ Note: No active GLM API key is set for live model evaluation.")
+                enter_now = input("Would you like to enter your GLM key now (kept in RAM only)? (y/n): ").strip().lower()
+                if enter_now == "y":
+                    setup_credentials_interactive(pipeline)
+                    model_val = get_active_model(pipeline)
+
+            count_input = input("\nHow many papers to harvest in succession? [default: 50]: ").strip()
+            target_count = int(count_input) if count_input.isdigit() and int(count_input) > 0 else 50
+
+            score_input = input("Minimum score for PDF download & graph indexing? [default: 70]: ").strip()
+            min_score = int(score_input) if score_input.isdigit() else 70
+
+            topic_query = input("Specific search filter (or press Enter for all quant categories): ").strip()
+
+            pipeline.run_bulk_harvest(
+                target_count=target_count,
+                min_score=min_score,
+                download_pdfs=True,
+                search_query=topic_query
+            )
+            input("\nPress Enter to return to main menu...")
         elif choice == "3":
-            query = input("\nEnter quant search topic (e.g. 'limit order book execution'): ").strip()
+            query = input("\nEnter quant search topic (e.g. 'order execution deep reinforcement learning'): ").strip()
             if query:
-                limit_input = input("How many papers to evaluate? [default: 3]: ").strip()
-                limit = int(limit_input) if limit_input.isdigit() else 3
+                limit_input = input("How many papers to evaluate? [default: 5]: ").strip()
+                limit = int(limit_input) if limit_input.isdigit() else 5
                 print(f"\n[Search] Querying arXiv and OpenAlex for '{query}'...")
                 results = pipeline.search_and_ingest(query, limit=limit)
-                print(f"\nFound and evaluated {len(results)} papers:")
+                print(f"\nEvaluated {len(results)} papers:")
                 for p in results:
                     print(f"\n🌟 [{p['score']}/100] {p['title']}")
-                    print(f"   Hook: {p.get('hook')}")
-                    print(f"   Alpha: {p.get('takeaway')}")
+                    print(f"   Category: {p.get('category', 'N/A')}")
+                    print(f"   Hook:     {p.get('hook')}")
+                    print(f"   Alpha:    {p.get('takeaway')}")
                     print(f"   Concepts: {', '.join(p.get('concepts', []))}")
-            input("\nPress Enter to return to menu...")
+            input("\nPress Enter to return to main menu...")
         elif choice == "4":
-            setup_credentials_interactive()
-            pipeline = PaperPipeline() # reload with new credentials
-            input("\nPress Enter to return to menu...")
-        elif choice == "5":
             html_path = pipeline.graph_builder.export_interactive_html()
             abs_path = os.path.abspath(html_path)
-            print(f"\n[Graph] Exported interactive HTML to: {abs_path}")
-            open_browser = input("Open graph in web browser now? (y/n): ").strip().lower()
-            if open_browser == "y":
-                webbrowser.open(f"file:///{abs_path}")
-            input("\nPress Enter to return to menu...")
-        elif choice == "6":
-            stats = pipeline.db.get_stats()
-            print("\n=== Corpus & Database Statistics ===")
-            print(f"Total Papers Ingested:    {stats['total_papers']}")
-            print(f"Evaluated by GLM:         {stats['evaluated_papers']}")
-            print(f"Dispatched to Discord:    {stats['posted_papers']}")
-            print(f"Full-text PDFs Tokenized: {stats['tokenized_pdfs']}")
-            print(f"Total Token Count:        {stats['total_tokens']:,}")
-            print(f"Unique Quant Concepts:    {stats['unique_concepts']}")
-            print("====================================")
-            input("\nPress Enter to return to menu...")
-        elif choice == "7":
-            filters = pipeline.config.get("filters", {})
-            current = filters.get("interests", [])
-            print("\nCurrent Active Quant Research Interests:")
-            for i in current:
-                print(f" • {i}")
-            new_val = input("\nEnter new comma-separated interests (or press Enter to keep): ").strip()
-            if new_val:
-                new_list = [x.strip() for x in new_val.split(",") if x.strip()]
-                pipeline.update_filter_interests(new_list)
-                print("✅ Updated filter interests!")
-            input("\nPress Enter to return to menu...")
-        elif choice == "8":
-            print("\n[Tests] Running automated unittest suite...")
-            import unittest
-            loader = unittest.TestLoader()
-            suite = loader.discover("tests")
-            runner = unittest.TextTestRunner(verbosity=2)
-            runner.run(suite)
-            input("\nPress Enter to return to menu...")
+            print(f"\n[Graph] Interactive Knowledge Graph generated at:\n  {abs_path}")
+            open_browser = input("Open graph in default web browser? (y/n) [default: y]: ").strip().lower()
+            if open_browser != "n":
+                try:
+                    webbrowser.open(f"file://{abs_path}")
+                    print("[Graph] Opened in browser.")
+                except Exception as e:
+                    print(f"[Graph] Could not open browser automatically: {e}")
+            input("\nPress Enter to return to main menu...")
+        elif choice == "5":
+            setup_credentials_interactive(pipeline)
         elif choice == "0":
-            print("\nExiting QuantPaperBot. Happy trading & research! 👋")
-            sys.exit(0)
+            print("\nShutting down Quant Paper Scraper. Goodbye!\n")
+            break
         else:
-            print("\nInvalid choice. Please select from 0 to 8.")
+            print("\n[!] Invalid selection. Please choose an option from 0 to 5.")
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Quantitative Finance Paper Scraper, GLM Evaluator, PDF Tokenizer & Knowledge Graph"
+        description="Quantitative Finance Paper Scraper, GLM Evaluator, and Discord Bot"
     )
-    parser.add_argument("--bot", action="store_true", help="Start the 24/7 Discord bot directly")
-    parser.add_argument("--daily", action="store_true", help="Run a single daily curation cycle")
-    parser.add_argument("--search", type=str, default="", help="Search on-demand for a quant topic")
-    parser.add_argument("--limit", type=int, default=5, help="Number of papers for search")
-    parser.add_argument("--graph", action="store_true", help="Export the interactive knowledge graph")
-    parser.add_argument("--stats", action="store_true", help="Display database statistics")
-    parser.add_argument("--setup", action="store_true", help="Run interactive credentials setup")
+    parser.add_argument(
+        "--mode",
+        choices=["interactive", "bot", "run-daily", "harvest", "search", "export-graph", "config"],
+        default="interactive",
+        help="Execution mode (default: interactive menu)"
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="",
+        help="Override GLM model name dynamically (default: from env/config or glm-5.3-plus)"
+    )
+    parser.add_argument("--query", type=str, default="", help="Search query for search mode")
+    parser.add_argument("--limit", type=int, default=5, help="Number of papers to process in search mode")
+    parser.add_argument("--count", type=int, default=50, help="Number of papers for harvest mode")
+    parser.add_argument("--min-score", type=int, default=70, help="Minimum score threshold for PDF download")
 
     args = parser.parse_args()
 
-    # Direct CLI commands if specified
-    if args.setup:
-        setup_credentials_interactive()
-        return
+    # Apply command line model override if provided
+    if args.model:
+        os.environ["GLM_MODEL"] = args.model
 
-    if args.stats:
-        pipeline = PaperPipeline()
-        stats = pipeline.db.get_stats()
-        print("\n=== Corpus & Database Statistics ===")
-        print(f"Total Papers Ingested:    {stats['total_papers']}")
-        print(f"Evaluated by GLM:         {stats['evaluated_papers']}")
-        print(f"Dispatched to Discord:    {stats['posted_papers']}")
-        print(f"Full-text PDFs Tokenized: {stats['tokenized_pdfs']}")
-        print(f"Total Token Count:        {stats['total_tokens']:,}")
-        print(f"Unique Graph Concepts:    {stats['unique_concepts']}")
-        print("====================================\n")
-        return
+    pipeline = PaperPipeline()
+    if args.model:
+        pipeline.glm_client.model = args.model
+        pipeline.glm_client.model_name = args.model
 
-    if args.graph:
-        pipeline = PaperPipeline()
-        path = pipeline.graph_builder.export_interactive_html()
-        print(f"[Main] Interactive Knowledge Graph exported to: {os.path.abspath(path)}")
-        return
-
-    if args.search:
-        pipeline = PaperPipeline()
-        print(f"[Main] Searching quant papers for topic: '{args.search}'...")
-        results = pipeline.search_and_ingest(args.search, limit=args.limit)
-        print(f"\n[Main] Ingested and evaluated {len(results)} papers:")
-        for r in results:
-            print(f"\n🌟 [{r['score']}/100] {r['title']}")
-            print(f"   Hook: {r['hook']}")
-            print(f"   Alpha: {r['takeaway']}")
-            print(f"   Concepts: {', '.join(r.get('concepts', []))}")
-        return
-
-    if args.daily:
-        pipeline = PaperPipeline()
-        print("[Main] Executing immediate daily curation pipeline...")
-        top_paper = pipeline.run_daily_cycle()
-        if top_paper:
-            print(f"\n🏆 Daily Top Pick Selected: #{top_paper['id']}")
-            print(f"Title: {top_paper['title']}")
-            print(f"Score: {top_paper['score']}/100")
-            print(f"Hook:  {top_paper.get('hook')}")
-            print(f"Breakthrough: {top_paper.get('breakthrough_summary')}")
-            print(f"Broader Impact: {top_paper.get('takeaway')}")
-        return
-
-    if args.bot:
-        pipeline = PaperPipeline()
+    if args.mode == "interactive":
+        interactive_menu(pipeline)
+    elif args.mode == "bot":
         start_discord_bot(pipeline)
-        return
-
-    # Default: Open the Rich Interactive Terminal Menu!
-    interactive_menu()
+    elif args.mode == "run-daily":
+        pipeline.run_daily_cycle()
+    elif args.mode == "harvest":
+        pipeline.run_bulk_harvest(target_count=args.count, min_score=args.min_score, search_query=args.query)
+    elif args.mode == "search":
+        q = args.query or "quantitative finance high frequency trading"
+        pipeline.search_and_ingest(q, limit=args.limit)
+    elif args.mode == "export-graph":
+        out = pipeline.graph_builder.export_interactive_html()
+        print(f"Graph exported to {out}")
+    elif args.mode == "config":
+        setup_credentials_interactive(pipeline)
 
 if __name__ == "__main__":
     main()

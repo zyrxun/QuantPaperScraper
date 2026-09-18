@@ -1,3 +1,7 @@
+llm:
+  model: "glm-5.3-plus"
+  base_url: "https://open.bigmodel.cn/api/paas/v4"
+
 storage:
   db_path: "data/papers.db"
   pdf_dir: "data/pdfs"

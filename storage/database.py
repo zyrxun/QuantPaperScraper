@@ -33,6 +33,7 @@ class Database:
                 title TEXT NOT NULL,
                 authors TEXT,
                 abstract TEXT NOT NULL,
+                category TEXT,
                 published_date TEXT,
                 pdf_url TEXT,
                 local_pdf_path TEXT,
@@ -40,6 +41,12 @@ class Database:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """)
+
+            # Ensure category column exists in existing databases
+            cursor.execute("PRAGMA table_info(papers)")
+            cols = [col[1] for col in cursor.fetchall()]
+            if "category" not in cols:
+                cursor.execute("ALTER TABLE papers ADD COLUMN category TEXT")
 
             # Evaluations table
             cursor.execute("""
@@ -112,12 +119,13 @@ class Database:
             cursor = conn.cursor()
             authors_json = json.dumps(paper.get("authors", []))
             cursor.execute("""
-            INSERT INTO papers (external_id, source, title, authors, abstract, published_date, pdf_url, local_pdf_path, doi)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO papers (external_id, source, title, authors, abstract, category, published_date, pdf_url, local_pdf_path, doi)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(external_id) DO UPDATE SET
                 title=excluded.title,
                 abstract=excluded.abstract,
-                pdf_url=excluded.pdf_url
+                pdf_url=excluded.pdf_url,
+                category=COALESCE(excluded.category, papers.category)
             RETURNING id
             """, (
                 paper["external_id"],
@@ -125,6 +133,7 @@ class Database:
                 paper["title"],
                 authors_json,
                 paper["abstract"],
+                paper.get("category", "Quantitative Finance"),
                 paper.get("published_date", ""),
                 paper.get("pdf_url", ""),
                 paper.get("local_pdf_path", None),
@@ -306,3 +315,59 @@ class Database:
                 "posted_papers": posted_papers,
                 "unique_concepts": unique_concepts
             }
+
+    def get_detailed_stats(self) -> Dict[str, Any]:
+        """
+        Provides comprehensive database metrics for the dashboard,
+        including category breakdowns, score distribution, and top concepts.
+        """
+        stats = self.get_stats()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Category breakdown
+            cursor.execute("""
+            SELECT COALESCE(category, 'Quantitative Finance') as cat, COUNT(*) as cnt
+            FROM papers
+            GROUP BY cat
+            ORDER BY cnt DESC
+            """)
+            stats["categories"] = {row["cat"]: row["cnt"] for row in cursor.fetchall()}
+
+            # Score distribution
+            cursor.execute("""
+            SELECT 
+                COUNT(CASE WHEN score >= 85 THEN 1 END) as elite,
+                COUNT(CASE WHEN score >= 70 AND score < 85 THEN 1 END) as notable,
+                COUNT(CASE WHEN score < 70 THEN 1 END) as screened,
+                ROUND(AVG(score), 1) as avg_score
+            FROM evaluations
+            """)
+            score_row = cursor.fetchone()
+            stats["score_distribution"] = {
+                "elite": score_row["elite"] if score_row else 0,
+                "notable": score_row["notable"] if score_row else 0,
+                "screened": score_row["screened"] if score_row else 0,
+                "avg_score": score_row["avg_score"] if score_row and score_row["avg_score"] is not None else 0.0
+            }
+
+            # Top concepts
+            cursor.execute("""
+            SELECT entity_name, COUNT(*) as cnt
+            FROM graph_entities
+            WHERE entity_type = 'concept'
+            GROUP BY entity_name
+            ORDER BY cnt DESC
+            LIMIT 10
+            """)
+            stats["top_concepts"] = [(row["entity_name"], row["cnt"]) for row in cursor.fetchall()]
+
+            # Sources breakdown
+            cursor.execute("""
+            SELECT source, COUNT(*) as cnt
+            FROM papers
+            GROUP BY source
+            """)
+            stats["sources"] = {row["source"]: row["cnt"] for row in cursor.fetchall()}
+
+            return stats

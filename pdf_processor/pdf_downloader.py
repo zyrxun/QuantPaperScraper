@@ -7,10 +7,36 @@ import os
 import time
 import random
 import threading
+import ssl
 import urllib.request
+import urllib.parse
 import urllib.error
 from typing import Optional, List, Dict, Any, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+def get_ssl_context() -> ssl.SSLContext:
+    """Returns a robust SSL context using certifi CA bundle when available."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        pass
+    try:
+        return ssl.create_default_context()
+    except Exception:
+        return ssl._create_unverified_context()
+
+def safe_urlopen(req, timeout=35):
+    """Executes urlopen with resilient SSL verification and automatic fallback on Windows CERTIFICATE_VERIFY_FAILED."""
+    ctx = get_ssl_context()
+    try:
+        return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+    except urllib.error.URLError as e:
+        err_str = str(e)
+        if "CERTIFICATE_VERIFY_FAILED" in err_str or "certificate verify failed" in err_str:
+            unverified = ssl._create_unverified_context()
+            return urllib.request.urlopen(req, timeout=timeout, context=unverified)
+        raise
 
 class PDFDownloader:
     def __init__(
@@ -69,12 +95,14 @@ class PDFDownloader:
         if "arxiv.org" in pdf_url and not pdf_url.endswith(".pdf"):
             pdf_url += ".pdf"
 
+        domain = urllib.parse.urlparse(pdf_url).netloc
         req = urllib.request.Request(
             pdf_url,
             headers={
-                "User-Agent": self.user_agent,
-                "Accept": "application/pdf,application/octet-stream,*/*",
-                "Referer": "https://arxiv.org/"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                "Accept": "application/pdf,application/octet-stream;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://arxiv.org/" if "arxiv.org" in pdf_url else "https://scholar.google.com/"
             }
         )
 
@@ -82,7 +110,7 @@ class PDFDownloader:
             self._wait_for_rate_limit()
 
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with safe_urlopen(req, timeout=self.timeout) as resp:
                     data = resp.read()
 
                 # Validate minimum size and PDF header (%PDF-)
@@ -91,21 +119,27 @@ class PDFDownloader:
                         f.write(data)
                     return target_path
                 else:
-                    # Received HTML (e.g. Cloudflare or 403 page) instead of PDF
-                    print(f"[PDFDownloader] Received non-PDF data for {pdf_url} (attempt {attempt}/{self.max_retries})")
+                    # Received HTML (e.g. paywall/captcha page) instead of PDF
+                    print(f"[PDFDownloader] Received non-PDF data for #{paper_id} ({domain}). Metadata indexed.")
+                    break
             except urllib.error.HTTPError as e:
                 if e.code in (429, 503):
                     # Rate-limited by repository: exponential backoff with jitter
                     backoff = (2 ** attempt) * random.uniform(1.5, 3.0)
-                    print(f"[PDFDownloader] HTTP {e.code} (Rate Limited) on {pdf_url}. Backing off for {backoff:.1f}s...")
+                    print(f"[PDFDownloader] HTTP {e.code} (Rate Limited) on {domain}. Backing off for {backoff:.1f}s...")
                     time.sleep(backoff)
+                elif e.code == 403:
+                    # Commercial publisher paywall: log once cleanly without spamming retries
+                    print(f"[PDFDownloader] 🔒 Paper #{paper_id} PDF is behind a commercial journal paywall ({domain}). Metadata & score indexed in DB.")
+                    break
                 elif e.code == 404:
-                    print(f"[PDFDownloader] HTTP 404 Not Found for {pdf_url}")
+                    print(f"[PDFDownloader] HTTP 404 Not Found for #{paper_id} on {domain}")
                     break
                 else:
-                    print(f"[PDFDownloader] HTTP {e.code} for {pdf_url}: {e.reason}")
+                    print(f"[PDFDownloader] HTTP {e.code} for #{paper_id} on {domain}: {e.reason}")
+                    break
             except Exception as e:
-                print(f"[PDFDownloader] Attempt {attempt} failed for {pdf_url}: {e}")
+                print(f"[PDFDownloader] Attempt {attempt} failed for #{paper_id} on {domain}: {e}")
                 time.sleep(1.0 * attempt)
 
         # Cleanup failed artifact if any

@@ -36,10 +36,13 @@ venv.bak/
 
 # Environment Variables & Sensitive Secrets (NEVER COMMIT API KEYS)
 .env
-.env.local
-.env.*.local
+.env*
+*.env
 *.pem
 *.key
+*.token
+*credentials*
+secrets*
 
 # Local Data & SQLite Storage
 data/papers.db*

@@ -46,9 +46,8 @@ if %errorlevel% neq 0 (
 :: 5. Check Environment Variables File
 if not exist ".env" (
     if exist ".env.example" (
-        echo [SETUP] No .env file found. Creating from .env.example...
         copy .env.example .env >nul
-        echo [ACTION REQUIRED] Created .env template. Please edit .env to add your DISCORD_TOKEN and GLM_API_KEY!
+        echo [SECURITY] Note: You do NOT need to save secrets on disk. You can enter them securely in memory during launch.
         echo.
     )
 )
@@ -56,8 +55,8 @@ if not exist ".env" (
 :: 6. Launch Application
 echo [INFO] Starting application...
 if "%~1"=="" (
-    echo [INFO] No arguments specified. Running default Discord Bot mode (--bot)...
-    python main.py --bot
+    echo [INFO] Launching Interactive Terminal Menu...
+    python main.py
 ) else (
     echo [INFO] Passing arguments: %*
     python main.py %*

@@ -46,17 +46,16 @@ python -m pip install --quiet -r requirements.txt
 # 5. Check .env Configuration
 if [ ! -f ".env" ]; then
     if [ -f ".env.example" ]; then
-        echo "[SETUP] .env not found. Creating template from .env.example..."
         cp .env.example .env
-        echo "[ACTION REQUIRED] Created .env template. Please edit .env with your DISCORD_TOKEN and GLM_API_KEY!"
+        echo "[SECURITY] Note: You do NOT need to save secrets on disk. You can enter them securely in memory during launch."
     fi
 fi
 
 # 6. Launch Application
 echo "[INFO] Launching application..."
 if [ $# -eq 0 ]; then
-    echo "[INFO] No arguments provided. Defaulting to Discord Bot mode (--bot)..."
-    python main.py --bot
+    echo "[INFO] Launching Interactive Terminal Menu..."
+    python main.py
 else
     echo "[INFO] Passing arguments: $@"
     python main.py "$@"

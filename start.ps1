@@ -55,17 +55,16 @@ $envExample = Join-Path $PSScriptRoot ".env.example"
 
 if (-not (Test-Path $envFile)) {
     if (Test-Path $envExample) {
-        Write-Host "[SETUP] .env file not found. Copying from .env.example..." -ForegroundColor Yellow
         Copy-Item -Path $envExample -Destination $envFile
-        Write-Host "[ACTION REQUIRED] Created .env template. Please edit .env with your DISCORD_TOKEN and GLM_API_KEY!" -ForegroundColor Magenta
+        Write-Host "[SECURITY] Note: You do NOT need to save secrets on disk. You can enter them securely in memory during launch." -ForegroundColor Green
     }
 }
 
 # 6. Launch Application
 Write-Host "[INFO] Launching application..." -ForegroundColor Green
 if ($AppArgs.Count -eq 0) {
-    Write-Host "[INFO] Defaulting to Discord Bot mode (--bot)..." -ForegroundColor Gray
-    python main.py --bot
+    Write-Host "[INFO] Launching Interactive Terminal Menu..." -ForegroundColor Cyan
+    python main.py
 } else {
     Write-Host "[INFO] Passing arguments: $AppArgs" -ForegroundColor Gray
     python main.py $AppArgs

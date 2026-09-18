@@ -24,8 +24,10 @@ class PaperPipeline:
         self.db = Database(db_path=storage_cfg.get("db_path", "data/papers.db"))
         self.scraper_manager = ScraperManager(self.db, self.config)
         
-        # Analyzer with GLM
-        self.glm_client = GLMClient()
+        # Analyzer with GLM (Dynamic model from env/config, defaulting to glm-5.3-plus)
+        llm_cfg = self.config.get("llm", {})
+        active_model = os.getenv("GLM_MODEL") or llm_cfg.get("model") or "glm-5.3-plus"
+        self.glm_client = GLMClient(model=active_model)
         self.evaluator = PaperEvaluator(self.glm_client, self.config)
 
         # Multi-Threaded Polite PDF Downloader & Tokenization
@@ -178,3 +180,120 @@ class PaperPipeline:
         # Refresh graph
         self.graph_builder.export_interactive_html()
         return sorted(results, key=lambda x: x.get("score", 0), reverse=True)
+
+    def run_bulk_harvest(
+        self,
+        target_count: int = 100,
+        min_score: int = 70,
+        download_pdfs: bool = True,
+        search_query: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Streams and evaluates papers in continuous succession (hundreds, thousands, or tens of thousands):
+        - Paginates through arXiv and OpenAlex continuously.
+        - Feeds each incoming abstract to GLM model to screen for quantitative finance alpha.
+        - Stores all paper metadata, categories, and evaluation results in SQLite.
+        - For papers meeting or exceeding min_score, downloads PDFs politely and tokenizes them.
+        - Safe interruption via KeyboardInterrupt (Ctrl+C).
+        """
+        import time
+        start_time = time.time()
+        model_display = getattr(self.glm_client, "model_name", getattr(self.glm_client, "model", "glm-5.3-plus"))
+        print(f"\n[Bulk Harvest] 🚀 Starting successive ingestion of up to {target_count:,} papers...")
+        print(f"[Bulk Harvest] 🤖 Evaluation model: {model_display}")
+        print(f"[Bulk Harvest] 🎯 PDF download threshold: score >= {min_score}")
+        print(f"[Bulk Harvest] ℹ️  Press Ctrl+C anytime to pause/stop safely with 0 data loss.\n")
+
+        screened = 0
+        accepted = 0
+        downloaded = 0
+        accepted_buffer = []
+
+        try:
+            candidate_stream = self.scraper_manager.stream_candidates(
+                target_count=target_count,
+                search_query=search_query
+            )
+
+            for paper in candidate_stream:
+                try:
+                    # 1. Save paper to SQLite
+                    paper_id = self.db.save_paper(paper)
+                    paper["id"] = paper_id
+                    cat = paper.get("category", "General Quant")
+                    src = paper.get("source", "unknown").upper()
+                    
+                    # 2. Feed abstract to GLM model for evaluation
+                    eval_result = self.evaluator.evaluate(paper, self.config.get("filters", {}))
+                    self.db.save_evaluation(paper_id, eval_result)
+                    paper.update(eval_result)
+                    score = eval_result.get("score", 0)
+                    screened += 1
+
+                    # 3. Live progress logging
+                    tier = "💎 ALPHA/ELITE" if score >= 85 else ("⚡ NOTABLE" if score >= 70 else "⚪ SCREENED OUT")
+                    print(f"[{screened:,}/{target_count:,}] [{src}|{cat}] '{paper['title'][:42]}...'")
+                    print(f"       -> Score: {score}/100 [{tier}] | Hook: {eval_result.get('hook', '')[:65]}")
+
+                    # 4. Check if paper passes qualification threshold
+                    if score >= min_score:
+                        accepted += 1
+                        if download_pdfs and paper.get("pdf_url"):
+                            accepted_buffer.append(paper)
+
+                    # Flush download buffer when it reaches batch size of 5
+                    if len(accepted_buffer) >= 5:
+                        print(f"\n[Bulk Harvest] 📥 Downloading batch of {len(accepted_buffer)} qualified PDFs...")
+                        self.downloader.download_batch(
+                            accepted_buffer,
+                            on_download_complete=self._process_downloaded_pdf
+                        )
+                        downloaded += len(accepted_buffer)
+                        accepted_buffer = []
+
+                except Exception as e:
+                    print(f"[Bulk Harvest] Warning: Error processing paper '{paper.get('title', '')}': {e}")
+
+            # Flush any remaining accepted papers
+            if accepted_buffer and download_pdfs:
+                print(f"\n[Bulk Harvest] 📥 Downloading final batch of {len(accepted_buffer)} qualified PDFs...")
+                self.downloader.download_batch(
+                    accepted_buffer,
+                    on_download_complete=self._process_downloaded_pdf
+                )
+                downloaded += len(accepted_buffer)
+
+        except KeyboardInterrupt:
+            print("\n\n[Bulk Harvest] ⏸️ Ingestion paused by user (Ctrl+C). Saving progress...")
+            if accepted_buffer and download_pdfs:
+                print(f"[Bulk Harvest] Downloading pending {len(accepted_buffer)} qualified PDFs...")
+                self.downloader.download_batch(
+                    accepted_buffer,
+                    on_download_complete=self._process_downloaded_pdf
+                )
+                downloaded += len(accepted_buffer)
+
+        # Update Knowledge Graph
+        try:
+            print("[Bulk Harvest] 🌐 Updating Knowledge Graph...")
+            self.graph_builder.export_interactive_html()
+        except Exception as e:
+            print(f"[Bulk Harvest] Could not update graph: {e}")
+
+        elapsed = time.time() - start_time
+        mins, secs = divmod(int(elapsed), 60)
+        print("\n" + "=" * 65)
+        print("          🏁 BULK HARVEST & SCREENING COMPLETE")
+        print("=" * 65)
+        print(f" Papers Screened by GLM:  {screened:,}")
+        print(f" Papers Accepted (Score>={min_score}): {accepted:,}")
+        print(f" Full PDFs Processed:     {downloaded:,}")
+        print(f" Total Time Elapsed:      {mins}m {secs}s")
+        print("=" * 65)
+
+        return {
+            "screened": screened,
+            "accepted": accepted,
+            "downloaded": downloaded,
+            "elapsed_seconds": elapsed
+        }
