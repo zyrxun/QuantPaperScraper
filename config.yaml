@@ -1,0 +1,47 @@
+storage:
+  db_path: "data/papers.db"
+  pdf_dir: "data/pdfs"
+  graph_output: "data/graph.html"
+
+scheduler:
+  daily_interval_hours: 24
+  candidates_per_fetch: 15
+  top_papers_to_post: 1
+
+downloader:
+  max_workers: 3              # Polite concurrency to prevent rate limits / IP blocking
+  request_delay_seconds: 1.5  # Politeness interval between HTTP calls
+  max_retries: 3              # Retries with exponential backoff on 429/503
+  timeout_seconds: 35
+  download_all_candidates: true # Concurrently download and tokenize all evaluated papers
+
+filters:
+  min_score: 75
+  interests:
+    - "Market Microstructure, Limit Order Books & High-Frequency Trading"
+    - "Statistical Arbitrage, Machine Learning & Quantitative Alpha Signals"
+    - "Stochastic Volatility Models, Rough Volatility & Exotic Derivatives Pricing"
+    - "Portfolio Optimization, Factor Investing & Risk Parity"
+    - "Reinforcement Learning for Trade Execution and Market Making"
+    - "Financial Econometrics, Regime Switching & Non-Linear Time Series"
+  preferred_criteria:
+    - "Novel quantitative alpha, mathematical rigor, and realistic no-arbitrage conditions"
+    - "Groundbreaking insights into market microstructure or order flow dynamics"
+    - "Innovative computational algorithms for high-dimensional portfolio or risk modeling"
+    - "Surprising empirical market phenomena or counter-intuitive financial statistical behavior"
+  arxiv_categories:
+    - "q-fin.TR"  # Trading and Market Microstructure
+    - "q-fin.PM"  # Portfolio Management
+    - "q-fin.CP"  # Computational Finance
+    - "q-fin.PR"  # Pricing of Securities
+    - "q-fin.RM"  # Risk Management
+    - "q-fin.ST"  # Statistical Finance
+    - "econ.EM"   # Econometrics
+  openalex_concepts:
+    - "Quantitative finance"
+    - "Market microstructure"
+    - "Algorithmic trading"
+    - "Stochastic volatility"
+    - "Portfolio optimization"
+    - "Financial econometrics"
+    - "High-frequency trading"
