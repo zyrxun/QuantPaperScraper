@@ -96,7 +96,12 @@ class PDFTokenizer:
             "upon", "school", "every", "don", "does", "got", "united", "left", "number", "course",
             "war", "until", "always", "away", "something", "fact", "water", "though", "public",
             "less", "et", "al", "fig", "figure", "table", "section", "paper", "approach", "method",
-            "results", "study", "using", "based", "proposed", "model", "data", "show"
+            "methods", "results", "study", "using", "based", "proposed", "model", "models", "data", "show",
+            "from", "into", "onto", "within", "among", "across", "along", "behind", "beyond", "during",
+            "towards", "theorem", "treatment", "exact", "sample", "samples", "assumption", "assumptions",
+            "given", "value", "values", "second", "third", "case", "cases", "analysis", "article",
+            "present", "presents", "show", "shows", "provide", "provides", "investigate", "test",
+            "defined", "proof", "lemma", "proposition", "corollary", "definition", "equation", "formula"
         }
 
         # Find words of length 4 to 25

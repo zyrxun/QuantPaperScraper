@@ -259,12 +259,14 @@ class Database:
             return results
 
     def get_all_papers_for_graph(self) -> List[Dict[str, Any]]:
-        """Retrieves all papers with their associated concepts for graph construction."""
+        """Retrieves all papers with their associated concepts and evaluation data for graph construction."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-            SELECT p.id, p.title, p.source, p.published_date, p.external_id,
-                   e.score, e.concepts, pt.total_tokens
+            SELECT p.id, p.title, p.authors, p.abstract, p.source, p.published_date,
+                   p.external_id, p.category, p.pdf_url,
+                   e.score, e.hook, e.breakthrough_summary, e.takeaway, e.concepts,
+                   pt.total_tokens, pt.section_breakdown, pt.extracted_keywords
             FROM papers p
             LEFT JOIN evaluations e ON p.id = e.paper_id
             LEFT JOIN pdf_tokens pt ON p.id = pt.paper_id
@@ -272,7 +274,18 @@ class Database:
             papers = []
             for r in cursor.fetchall():
                 p = dict(r)
-                p["concepts"] = json.loads(p["concepts"]) if p["concepts"] else []
+                p["concepts"] = json.loads(p["concepts"]) if p.get("concepts") else []
+                p["extracted_keywords"] = json.loads(p["extracted_keywords"]) if p.get("extracted_keywords") else []
+                if p.get("authors") and p["authors"].strip().startswith("["):
+                    try:
+                        p["authors"] = json.loads(p["authors"])
+                    except Exception:
+                        p["authors"] = [p["authors"]]
+                elif p.get("authors"):
+                    p["authors"] = [p["authors"]]
+                else:
+                    p["authors"] = []
+                p["section_breakdown"] = json.loads(p["section_breakdown"]) if p.get("section_breakdown") else {}
                 papers.append(p)
             return papers
 
@@ -285,6 +298,65 @@ class Database:
             FROM graph_entities
             """)
             return [dict(r) for r in cursor.fetchall()]
+
+    def reindex_corpus_entities(self, force_all: bool = False) -> int:
+        """
+        Re-extracts high-quality domain concepts from paper titles, abstracts, and categories,
+        replacing legacy identical fallback concepts in graph_entities and evaluations.
+        """
+        from graph.concept_extractor import extract_domain_concepts
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, title, abstract, category FROM papers")
+            papers = cursor.fetchall()
+            updated_count = 0
+
+            fallback_set = {
+                "stochastic volatility", "market microstructure", "risk-neutral pricing",
+                "statistical arbitrage", "optimal execution"
+            }
+
+            for row in papers:
+                pid, title, abstract, cat = row["id"], row["title"], row["abstract"], row["category"]
+                # Check current evaluation concepts
+                cursor.execute("SELECT concepts FROM evaluations WHERE paper_id = ?", (pid,))
+                eval_row = cursor.fetchone()
+                existing_concepts = json.loads(eval_row[0]) if eval_row and eval_row[0] else []
+
+                is_stale_fallback = (set(existing_concepts) == fallback_set)
+
+                if force_all or is_stale_fallback or not existing_concepts:
+                    new_concepts = extract_domain_concepts(title, abstract, cat)
+                    if new_concepts:
+                        # Update evaluation
+                        cursor.execute("""
+                        UPDATE evaluations SET concepts = ? WHERE paper_id = ?
+                        """, (json.dumps(new_concepts), pid))
+
+                        # Delete old concept entities for this paper
+                        cursor.execute("""
+                        DELETE FROM graph_entities WHERE paper_id = ? AND entity_type = 'concept'
+                        """, (pid,))
+
+                        # Insert fresh concept entities
+                        for c in new_concepts:
+                            cursor.execute("""
+                            INSERT INTO graph_entities (paper_id, entity_name, entity_type, weight)
+                            VALUES (?, ?, 'concept', 1.0)
+                            """, (pid, c.lower().strip()))
+
+                        updated_count += 1
+
+            # Clean up stopword / short noise from PDF keywords in graph_entities
+            from graph.concept_extractor import STOPWORDS
+            placeholders = ",".join("?" for _ in STOPWORDS)
+            cursor.execute(f"""
+            DELETE FROM graph_entities 
+            WHERE entity_type = 'keyword' AND (entity_name IN ({placeholders}) OR length(entity_name) < 4)
+            """, list(STOPWORDS))
+
+            conn.commit()
+            return updated_count
 
     def get_stats(self) -> Dict[str, Any]:
         """Provides summary metrics of the database corpus."""

@@ -129,6 +129,79 @@ class TestPaperPipeline(unittest.TestCase):
             self.assertIn("Neuro-symbolic Computation", content)
             self.assertIn("vis.Network", content)
 
+    def test_knowledge_graph_optimizations(self):
+        """Test TF-IDF sparse similarity, community detection, and concept extraction."""
+        from graph.concept_extractor import extract_domain_concepts
+        
+        # Test concept extractor
+        hft_concepts = extract_domain_concepts("High-Frequency Trading in Limit Order Books", "Market microstructure and optimal execution analysis")
+        self.assertIn("high-frequency trading", hft_concepts)
+        self.assertIn("limit order book", hft_concepts)
+
+        # Seed 3 distinct papers in test DB
+        p1 = self.db.save_paper({
+            "title": "Optimal Liquidation in Order Books",
+            "abstract": "We study market microstructure and high-frequency trading.",
+            "source": "arxiv", "external_id": "test:001"
+        })
+        self.db.save_evaluation(p1, {
+            "score": 92, "hook": "Alpha execution", "breakthrough_summary": "LOB optimal liquidation",
+            "takeaway": "Reduce slippage",
+            "concepts": ["market microstructure", "limit order book", "optimal execution"]
+        })
+
+        p2 = self.db.save_paper({
+            "title": "High Frequency Market Making Dynamics",
+            "abstract": "Analysis of limit order books and optimal execution strategies.",
+            "source": "arxiv", "external_id": "test:002"
+        })
+        self.db.save_evaluation(p2, {
+            "score": 88, "hook": "Microstructure alpha", "breakthrough_summary": "Order book dynamics",
+            "takeaway": "Tighten spreads",
+            "concepts": ["market microstructure", "limit order book", "optimal execution"]
+        })
+
+        p3 = self.db.save_paper({
+            "title": "Deep Reinforcement Learning for Alpha Mining",
+            "abstract": "Neural network policy gradient framework.",
+            "source": "arxiv", "external_id": "test:003"
+        })
+        self.db.save_evaluation(p3, {
+            "score": 85, "hook": "Deep RL alpha", "breakthrough_summary": "Neural network actor critic",
+            "takeaway": "Unsupervised feature extraction",
+            "concepts": ["deep reinforcement learning", "neural networks"]
+        })
+
+        html_file = os.path.join(self.test_dir, "optimized_graph.html")
+        builder = KnowledgeGraphBuilder(self.db, output_html=html_file)
+        G = builder.build_graph(top_k_similar=2, sim_threshold=0.20)
+
+        # p1 and p2 should have a similarity edge (shared microstructure concepts)
+        edge_key = tuple(sorted([f"paper:{p1}", f"paper:{p2}"]))
+        self.assertTrue(G.has_edge(edge_key[0], edge_key[1]))
+
+        # p3 shares 0 concepts with p1, so no similarity edge should exist (NOT a complete graph)
+        self.assertFalse(G.has_edge(f"paper:{p1}", f"paper:{p3}"))
+
+        # Verify community detection assigned cluster metadata
+        self.assertIn("cluster_id", G.nodes[f"paper:{p1}"])
+        self.assertIn("cluster_name", G.nodes[f"paper:{p1}"])
+
+        # Test degree-2 filtering (omits single-occurrence concepts)
+        G_deg2 = builder.build_graph(min_concept_degree=2)
+        self.assertNotIn("concept:deep reinforcement learning", G_deg2)
+
+        # Test interactive HTML export features
+        exported = builder.export_interactive_html()
+        self.assertTrue(os.path.exists(exported))
+        with open(exported, "r", encoding="utf-8") as f:
+            html = f.read()
+            self.assertIn("search-input", html)
+            self.assertIn("cluster-filter", html)
+            self.assertIn("inspector", html)
+            self.assertIn("barnesHut", html)
+            self.assertIn("toggleLeafNodes", html)
+
     def test_downloader_batch_empty_and_politeness(self):
         """Test that download_batch safely handles empty or local mock lists with polite pool."""
         from pdf_processor.pdf_downloader import PDFDownloader

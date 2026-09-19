@@ -4,8 +4,17 @@ tokenization, local database storage, and knowledge graph generation.
 """
 
 import os
+import sys
 import yaml
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, List, Optional
+
+# Ensure UTF-8 output on Windows consoles
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 from storage.database import Database
 from scraper.manager import ScraperManager
 from analyzer.glm_client import GLMClient

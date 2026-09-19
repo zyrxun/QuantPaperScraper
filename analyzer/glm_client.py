@@ -200,18 +200,31 @@ class GLMClient:
         prompt_content = messages[-1]["content"] if messages else ""
         
         # Heuristic score between 75 and 96
-        base_score = 75 + (hash(prompt_content) % 22)
+        base_score = 75 + (abs(hash(prompt_content)) % 22)
 
-        # Extract title from prompt if present
+        # Extract title, category, and abstract from prompt if present
         title = "Research Paper"
+        category = ""
+        abstract = ""
         if "Title:" in prompt_content:
             title = prompt_content.split("Title:")[1].split("\n")[0].strip()
+        if "Category:" in prompt_content:
+            category = prompt_content.split("Category:")[1].split("\n")[0].strip()
+        if "Abstract:" in prompt_content:
+            abstract_part = prompt_content.split("Abstract:")[1]
+            if "Evaluate this paper" in abstract_part:
+                abstract = abstract_part.split("Evaluate this paper")[0].strip()
+            else:
+                abstract = abstract_part[:500].strip()
+
+        from graph.concept_extractor import extract_domain_concepts
+        concepts = extract_domain_concepts(title, abstract, category)
 
         mock_response = {
             "score": base_score,
             "hook": f"Breakthrough quantitative formulation for {title[:45]}...",
-            "breakthrough_summary": "Presents a mathematically rigorous continuous-time framework with analytical tractability under stochastic volatility and jump diffusion.",
-            "takeaway": "Yields closed-form Greeks and superior empirical out-of-sample hedging performance in high-volatility regimes.",
-            "concepts": ["stochastic volatility", "market microstructure", "risk-neutral pricing", "statistical arbitrage", "optimal execution"]
+            "breakthrough_summary": f"Rigorous mathematical framework investigating {', '.join(concepts[:2])} with empirical market validation.",
+            "takeaway": f"Actionable alpha and execution implications leveraging {concepts[0] if concepts else 'quantitative modeling'}.",
+            "concepts": concepts
         }
         return json.dumps(mock_response)
