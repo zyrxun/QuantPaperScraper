@@ -40,6 +40,9 @@ filters:
     - "q-fin.PR"  # Pricing of Securities
     - "q-fin.RM"  # Risk Management
     - "q-fin.ST"  # Statistical Finance
+    - "q-fin.MF"  # Mathematical Finance
+    - "q-fin.GN"  # General Finance
+    - "q-fin.EC"  # Economics and Finance
     - "econ.EM"   # Econometrics
   openalex_concepts:
     - "Quantitative finance"

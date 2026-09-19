@@ -1,6 +1,7 @@
 """
 OpenAlex API scraper for discovering high-impact, classic, or diverse scientific papers.
-Fulfills user preference: 'They don't have to be recent papers - papers that are interesting.'
+Enforces quantitative finance and financial econometrics topics/subfields to prevent
+ingesting unrelated scientific/general software papers.
 """
 
 import ssl
@@ -34,6 +35,9 @@ def safe_urlopen(req, timeout=15):
             return urllib.request.urlopen(req, timeout=timeout, context=unverified)
         raise
 
+# OpenAlex Subfields: 2003 = Finance, 2002 = Economics and Econometrics
+DEFAULT_FINANCE_SUBFIELDS = ["2003", "2002"]
+
 class OpenAlexScraper:
     BASE_URL = "https://api.openalex.org/works"
 
@@ -54,15 +58,26 @@ class OpenAlexScraper:
         sorted_words = [position_word_map[k] for k in sorted(position_word_map.keys())]
         return " ".join(sorted_words)
 
-    def search(self, query: str = "", min_citations: int = 25, is_open_access: bool = True, page: int = 1, max_results: int = 15) -> List[Dict[str, Any]]:
+    def search(
+        self,
+        query: str = "",
+        min_citations: int = 20,
+        is_open_access: bool = True,
+        subfields: Optional[List[str]] = None,
+        page: int = 1,
+        max_results: int = 15
+    ) -> List[Dict[str, Any]]:
         """
-        Searches OpenAlex for fascinating papers, with optional citation thresholding and pagination.
+        Searches OpenAlex for papers strictly within Finance and Economics/Econometrics subfields.
         """
+        active_subfields = subfields if subfields is not None else DEFAULT_FINANCE_SUBFIELDS
         filters = []
         if is_open_access:
             filters.append("open_access.is_oa:true")
         if min_citations > 0:
             filters.append(f"cited_by_count:>{min_citations}")
+        if active_subfields:
+            filters.append(f"topics.subfield.id:{'|'.join(active_subfields)}")
 
         params = {
             "page": page,
@@ -97,6 +112,24 @@ class OpenAlexScraper:
                 # Skip papers without abstract as GLM needs the abstract to evaluate
                 continue
 
+            # Topic and domain validation
+            pt = work.get("primary_topic") or {}
+            subfield_id = str(pt.get("subfield", {}).get("id", "")).split("/")[-1]
+            all_topic_subfields = {
+                str(t.get("subfield", {}).get("id", "")).split("/")[-1]
+                for t in work.get("topics", [])
+            }
+            if subfield_id:
+                all_topic_subfields.add(subfield_id)
+
+            # Secondary safeguard: If subfield is specified, ensure it belongs to target domain
+            if active_subfields and not any(sf in all_topic_subfields for sf in active_subfields):
+                # Verify financial concepts as fallback
+                c_names = " ".join([c.get("display_name", "").lower() for c in work.get("concepts", [])])
+                finance_tokens = ["finance", "trading", "stock", "portfolio", "volatility", "econometric", "asset pricing", "arbitrage", "market microstructure"]
+                if not any(t in c_names for t in finance_tokens):
+                    continue
+
             # Authors
             authors = []
             for authorship in work.get("authorships", []):
@@ -127,8 +160,10 @@ class OpenAlexScraper:
                     if candidate_oa.endswith(".pdf") or "pdf" in candidate_oa:
                         pdf_url = candidate_oa
 
-            # Concepts / Topics
+            # Category resolution: Use primary topic name, then concept, then fallback
+            topic_name = pt.get("display_name")
             concepts = [c.get("display_name") for c in work.get("concepts", []) if c.get("display_name")]
+            display_category = topic_name or (concepts[0] if concepts else "Quantitative Finance")
 
             results.append({
                 "external_id": f"openalex:{work_id}",
@@ -140,7 +175,7 @@ class OpenAlexScraper:
                 "pdf_url": pdf_url,
                 "doi": doi,
                 "citations": work.get("cited_by_count", 0),
-                "category": concepts[0] if concepts else "Science"
+                "category": display_category
             })
 
             if len(results) >= max_results:
@@ -148,9 +183,19 @@ class OpenAlexScraper:
 
         return results
 
-    def stream_papers(self, query: str = "", min_citations: int = 25, is_open_access: bool = True, max_total: int = 500, per_page: int = 50, delay_seconds: float = 1.0):
+    def stream_papers(
+        self,
+        query: str = "",
+        min_citations: int = 20,
+        is_open_access: bool = True,
+        subfields: Optional[List[str]] = None,
+        max_total: int = 500,
+        per_page: int = 50,
+        delay_seconds: float = 1.0
+    ):
         """
-        Generator yielding OpenAlex papers one by one in succession across pages.
+        Generator yielding OpenAlex papers one by one in succession across pages,
+        strictly constrained to Finance and Economics/Econometrics subfields.
         """
         import time
         fetched_count = 0
@@ -163,6 +208,7 @@ class OpenAlexScraper:
                 query=query,
                 min_citations=min_citations,
                 is_open_access=is_open_access,
+                subfields=subfields,
                 page=page,
                 max_results=current_batch_limit
             )

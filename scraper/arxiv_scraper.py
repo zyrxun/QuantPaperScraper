@@ -40,22 +40,36 @@ class ArxivScraper:
     def __init__(self, user_agent: str = "PaperScraperBot/1.0 (academic-research)"):
         self.user_agent = user_agent
 
+    DEFAULT_QUANT_CATEGORIES = [
+        "q-fin.TR",  # Trading and Market Microstructure
+        "q-fin.PM",  # Portfolio Management
+        "q-fin.CP",  # Computational Finance
+        "q-fin.PR",  # Pricing of Securities
+        "q-fin.RM",  # Risk Management
+        "q-fin.ST",  # Statistical Finance
+        "q-fin.MF",  # Mathematical Finance
+        "q-fin.GN",  # General Finance
+        "q-fin.EC",  # Economics and Finance
+        "econ.EM",   # Econometrics
+    ]
+
     def search(self, query: str = "", categories: List[str] = None, start: int = 0, max_results: int = 15, sort_by: str = "submittedDate") -> List[Dict[str, Any]]:
         """
-        Searches arXiv for papers matching query or categories.
+        Searches arXiv for papers matching query and categories.
+        Enforces quantitative finance categories even when query is specified.
         Supports pagination offset via start parameter.
         sort_by options: 'submittedDate', 'lastUpdatedDate', 'relevance'
         """
-        # Build query string
-        query_parts = []
+        active_cats = categories if categories else self.DEFAULT_QUANT_CATEGORIES
+
+        # Build query string: Always constrain to quant categories
+        cat_query = " OR ".join([f"cat:{c.strip()}" for c in active_cats])
+        
         if query.strip():
-            query_parts.append(f"all:{query.strip()}")
-        
-        if categories:
-            cat_query = " OR ".join([f"cat:{c.strip()}" for c in categories])
-            query_parts.append(f"({cat_query})")
-        
-        search_query = " AND ".join(query_parts) if query_parts else "(cat:q-fin.TR OR cat:q-fin.PM OR cat:q-fin.CP OR cat:q-fin.PR OR cat:q-fin.RM OR cat:q-fin.ST)"
+            # Conjoin category filter with user query terms
+            search_query = f"({cat_query}) AND (all:{query.strip()})"
+        else:
+            search_query = f"({cat_query})"
 
         params = {
             "search_query": search_query,
@@ -159,8 +173,30 @@ class ArxivScraper:
                     doi = link.attrib.get("href", "")
 
             # Categories
+            all_categories = []
             primary_cat = entry.find("arxiv:primary_category", namespaces)
             cat_name = primary_cat.attrib.get("term", "") if primary_cat is not None else ""
+            if cat_name:
+                all_categories.append(cat_name)
+            for cat_el in entry.findall("atom:category", namespaces):
+                t = cat_el.attrib.get("term", "")
+                if t and t not in all_categories:
+                    all_categories.append(t)
+
+            # Strict domain guard: reject papers without a q-fin or econ.EM category
+            has_quant_category = any(c.startswith("q-fin") or c.startswith("econ.EM") for c in all_categories)
+            if not has_quant_category:
+                continue
+
+            # Prioritize q-fin category for display
+            display_cat = cat_name if (cat_name.startswith("q-fin") or cat_name.startswith("econ.EM")) else ""
+            if not display_cat:
+                for c in all_categories:
+                    if c.startswith("q-fin") or c.startswith("econ.EM"):
+                        display_cat = c
+                        break
+            if not display_cat:
+                display_cat = "q-fin.GN"
 
             papers.append({
                 "external_id": f"arxiv:{arxiv_id}",
@@ -171,7 +207,7 @@ class ArxivScraper:
                 "published_date": published_date,
                 "pdf_url": pdf_url,
                 "doi": doi,
-                "category": cat_name
+                "category": display_cat
             })
 
         return papers

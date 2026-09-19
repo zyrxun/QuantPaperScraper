@@ -199,9 +199,6 @@ class GLMClient:
         """
         prompt_content = messages[-1]["content"] if messages else ""
         
-        # Heuristic score between 75 and 96
-        base_score = 75 + (abs(hash(prompt_content)) % 22)
-
         # Extract title, category, and abstract from prompt if present
         title = "Research Paper"
         category = ""
@@ -217,10 +214,37 @@ class GLMClient:
             else:
                 abstract = abstract_part[:500].strip()
 
+        combined_text = f"{title} {abstract} {category}".lower()
+        quant_keywords = [
+            "trading", "trade", "trader", "market", "finance", "financial", "asset",
+            "portfolio", "volatility", "option", "pricing", "alpha", "arbitrage",
+            "liquidity", "limit order", "order book", "order flow", "hedge", "hedging",
+            "stock", "equity", "bond", "derivative", "greeks", "stochastic volatility",
+            "econometric", "econometrics", "macroeconomic", "microstructure", "slippage",
+            "execution", "bid-ask", "spread", "hft", "high-frequency", "jump diffusion",
+            "black-scholes", "capm", "factor model", "sharpe", "risk parity"
+        ]
+        is_quant = any(k in combined_text for k in quant_keywords) or category.lower().startswith("q-fin") or category.lower().startswith("econ.em")
+
+        if not is_quant:
+            mock_response = {
+                "is_quant_finance": False,
+                "score": 10 + (abs(hash(prompt_content)) % 6),
+                "hook": f"Irrelevant non-financial study: {title[:45]}...",
+                "breakthrough_summary": "This study does not examine quantitative finance, market microstructure, or asset pricing.",
+                "takeaway": "Rejected: paper is outside quantitative finance scope.",
+                "concepts": ["non-quant", "unrelated"]
+            }
+            return json.dumps(mock_response)
+
         from graph.concept_extractor import extract_domain_concepts
         concepts = extract_domain_concepts(title, abstract, category)
 
+        # Heuristic score between 75 and 96 for genuine quant papers
+        base_score = 75 + (abs(hash(prompt_content)) % 22)
+
         mock_response = {
+            "is_quant_finance": True,
             "score": base_score,
             "hook": f"Breakthrough quantitative formulation for {title[:45]}...",
             "breakthrough_summary": f"Rigorous mathematical framework investigating {', '.join(concepts[:2])} with empirical market validation.",
