@@ -53,43 +53,58 @@ class ArxivScraper:
         "econ.EM",   # Econometrics
     ]
 
-    def search(self, query: str = "", categories: List[str] = None, start: int = 0, max_results: int = 15, sort_by: str = "submittedDate") -> List[Dict[str, Any]]:
+    def search(self, query: str = "", categories: List[str] = None, start: int = 0, max_results: int = 15, sort_by: str = None) -> List[Dict[str, Any]]:
         """
         Searches arXiv for papers matching query and categories.
         Enforces quantitative finance categories even when query is specified.
+        When query is provided, defaults to relevance sorting and targets Title and Abstract
+        with exact phrase prioritization.
         Supports pagination offset via start parameter.
         sort_by options: 'submittedDate', 'lastUpdatedDate', 'relevance'
         """
         active_cats = categories if categories else self.DEFAULT_QUANT_CATEGORIES
-
-        # Build query string: Always constrain to quant categories
         cat_query = " OR ".join([f"cat:{c.strip()}" for c in active_cats])
+
+        effective_sort = sort_by if sort_by else ("relevance" if query.strip() else "submittedDate")
+        clean_q = query.strip()
+
+        def _do_query(search_q: str):
+            params = {
+                "search_query": search_q,
+                "start": str(start),
+                "max_results": str(max_results),
+                "sortBy": effective_sort,
+                "sortOrder": "descending"
+            }
+            url = f"{self.BASE_URL}?{urllib.parse.urlencode(params)}"
+            req = urllib.request.Request(url, headers={"User-Agent": self.user_agent})
+            try:
+                with safe_urlopen(req, timeout=15) as resp:
+                    xml_data = resp.read().decode("utf-8")
+                return self._parse_feed(xml_data)
+            except Exception as e:
+                print(f"[ArxivScraper] Error querying arXiv: {e}")
+                return []
+
+        if not clean_q:
+            return _do_query(f"({cat_query})")
+
+        # Strip existing outer quotes if any
+        raw_phrase = clean_q.strip('"').strip("'")
         
-        if query.strip():
-            # Conjoin category filter with user query terms
-            search_query = f"({cat_query}) AND (all:{query.strip()})"
-        else:
-            search_query = f"({cat_query})"
+        # Primary strategy: High-precision Title and Abstract phrase search
+        primary_q = f"({cat_query}) AND (ti:\"{raw_phrase}\" OR abs:\"{raw_phrase}\" OR all:\"{raw_phrase}\")"
+        results = _do_query(primary_q)
 
-        params = {
-            "search_query": search_query,
-            "start": str(start),
-            "max_results": str(max_results),
-            "sortBy": sort_by,
-            "sortOrder": "descending"
-        }
-        url = f"{self.BASE_URL}?{urllib.parse.urlencode(params)}"
+        # Fallback if phrase is overly specific and returned 0 results: try tokenized terms
+        if not results and " " in raw_phrase:
+            tokens = [t.strip() for t in raw_phrase.split() if len(t.strip()) > 2]
+            if tokens:
+                token_q = " AND ".join([f"(ti:{t} OR abs:{t})" for t in tokens])
+                fallback_q = f"({cat_query}) AND ({token_q})"
+                results = _do_query(fallback_q)
 
-        req = urllib.request.Request(url, headers={"User-Agent": self.user_agent})
-        
-        try:
-            with safe_urlopen(req, timeout=15) as resp:
-                xml_data = resp.read().decode("utf-8")
-        except Exception as e:
-            print(f"[ArxivScraper] Error querying arXiv: {e}")
-            return []
-
-        return self._parse_feed(xml_data)
+        return results
 
     def stream_papers(self, query: str = "", categories: List[str] = None, max_total: int = 500, batch_size: int = 50, delay_seconds: float = 3.0):
         """

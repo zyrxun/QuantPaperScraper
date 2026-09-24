@@ -302,10 +302,11 @@ def interactive_menu(pipeline: PaperPipeline = None):
         print("  [3] 🔍 Search & Evaluate Quant Papers (On-demand topic search across arXiv & OpenAlex)")
         print("  [4] 🌐 Knowledge Graph & Analytics    (Open interactive HTML graph & corpus stats)")
         print("  [5] ⚙️  API Credentials & Bot Settings (Configure Tokens, GLM Key, Channel, Interests)")
+        print("  [6] Reset Corpus & Graph           (Wipe database & start fresh from scratch)\n")
         print("  [0] 🚪 Exit")
         print("═" * 78)
 
-        choice = input("Select an option [0-5]: ").strip()
+        choice = input("Select an option [0-6]: ").strip()
 
         if choice == "1":
             start_discord_bot(pipeline)
@@ -340,31 +341,56 @@ def interactive_menu(pipeline: PaperPipeline = None):
             )
             input("\nPress Enter to return to main menu...")
         elif choice == "3":
-            query = input("\nEnter quant search topic (e.g. 'order execution deep reinforcement learning'): ").strip()
+            from search_papers import search_and_evaluate
+            query = input("\nEnter quant search topic (e.g. 'statistical arbitrage', 'pairs trading'): ").strip()
             if query:
-                limit_input = input("How many papers to evaluate? [default: 5]: ").strip()
-                limit = int(limit_input) if limit_input.isdigit() else 5
-                print(f"\n[Search] Querying arXiv and OpenAlex for '{query}'...")
-                results = pipeline.search_and_ingest(query, limit=limit)
-                print(f"\nEvaluated {len(results)} papers:")
-                for p in results:
-                    print(f"\n🌟 [{p['score']}/100] {p['title']}")
-                    print(f"   Category: {p.get('category', 'N/A')}")
-                    print(f"   Hook:     {p.get('hook')}")
-                    print(f"   Alpha:    {p.get('takeaway')}")
-                    print(f"   Concepts: {', '.join(p.get('concepts', []))}")
+                limit_input = input("How many top papers to look for? [default: 5]: ").strip()
+                limit = int(limit_input) if limit_input.isdigit() and int(limit_input) > 0 else 5
+                dl_input = input("Download PDFs for qualifying un-downloaded papers? (y/n) [default: y]: ").strip().lower()
+                download = dl_input != "n"
+                search_and_evaluate(query=query, limit=limit, download_pdfs=download)
             input("\nPress Enter to return to main menu...")
         elif choice == "4":
-            html_path = pipeline.graph_builder.export_interactive_html()
-            abs_path = os.path.abspath(html_path)
-            print(f"\n[Graph] Interactive Knowledge Graph generated at:\n  {abs_path}")
-            open_browser = input("Open graph in default web browser? (y/n) [default: y]: ").strip().lower()
-            if open_browser != "n":
-                try:
-                    webbrowser.open(f"file://{abs_path}")
-                    print("[Graph] Opened in browser.")
-                except Exception as e:
-                    print(f"[Graph] Could not open browser automatically: {e}")
+            print("\n" + "=" * 65)
+            print("  🌐 KNOWLEDGE GRAPH OPTIONS")
+            print("=" * 65)
+            print("  [1] Open Full Knowledge Graph (all papers in corpus)")
+            print("  [2] Open Graph for Downloaded PDFs Only")
+            print("  [3] Open Graph for Specific Topic / Keyword")
+            print("  [4] Reset Corpus & Graph (Start completely from scratch)")
+            print("  [0] Return to Main Menu")
+            g_opt = input("\nSelect graph option [1-4, or 0]: ").strip()
+
+            html_path = ""
+            if g_opt == "1":
+                html_path = pipeline.graph_builder.export_interactive_html()
+            elif g_opt == "2":
+                html_path = pipeline.graph_builder.export_interactive_html(only_downloaded=True)
+            elif g_opt == "3":
+                t_query = input("Enter topic filter (e.g. 'statistical arbitrage'): ").strip()
+                html_path = pipeline.graph_builder.export_interactive_html(query=t_query)
+            elif g_opt == "4":
+                from reset_corpus import reset_corpus
+                reset_corpus()
+            elif g_opt == "0":
+                pass
+            else:
+                html_path = pipeline.graph_builder.export_interactive_html()
+
+            if html_path:
+                abs_path = os.path.abspath(html_path)
+                print(f"\n[Graph] Interactive Knowledge Graph generated at:\n  {abs_path}")
+                open_browser = input("Open graph in default web browser? (y/n) [default: y]: ").strip().lower()
+                if open_browser != "n":
+                    try:
+                        webbrowser.open(f"file://{abs_path}")
+                        print("[Graph] Opened in browser.")
+                    except Exception as e:
+                        print(f"[Graph] Could not open browser automatically: {e}")
+            input("\nPress Enter to return to main menu...")
+        elif choice == "6":
+            from reset_corpus import reset_corpus
+            reset_corpus()
             input("\nPress Enter to return to main menu...")
         elif choice == "5":
             setup_credentials_interactive(pipeline)

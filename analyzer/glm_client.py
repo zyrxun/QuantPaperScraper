@@ -240,15 +240,13 @@ class GLMClient:
         from graph.concept_extractor import extract_domain_concepts
         concepts = extract_domain_concepts(title, abstract, category)
 
-        # Heuristic score between 75 and 96 for genuine quant papers
-        base_score = 75 + (abs(hash(prompt_content)) % 22)
-
-        mock_response = {
-            "is_quant_finance": True,
-            "score": base_score,
-            "hook": f"Breakthrough quantitative formulation for {title[:45]}...",
-            "breakthrough_summary": f"Rigorous mathematical framework investigating {', '.join(concepts[:2])} with empirical market validation.",
-            "takeaway": f"Actionable alpha and execution implications leveraging {concepts[0] if concepts else 'quantitative modeling'}.",
-            "concepts": concepts
+        from .local_evaluator import LocalPaperEvaluator
+        local_eval = LocalPaperEvaluator()
+        paper_stub = {
+            "title": title,
+            "category": category,
+            "abstract": abstract,
+            "citations": 0
         }
-        return json.dumps(mock_response)
+        res = local_eval.evaluate(paper_stub)
+        return json.dumps(res)

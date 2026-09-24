@@ -164,30 +164,47 @@ class PaperPipeline:
 
         return top_paper
 
-    def search_and_ingest(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+    def search_and_ingest(
+        self,
+        query: str,
+        limit: int = 5,
+        only_undownloaded: bool = True,
+        download_pdfs: bool = True
+    ) -> List[Dict[str, Any]]:
         """
-        On-demand search command for CLI or Discord. Fetches, evaluates, and stores papers.
-        Downloads PDFs concurrently with polite rate-limiting.
+        On-demand search command for CLI or Discord.
+        Fetches, evaluates with query relevance, and stores papers.
+        Prioritizes un-downloaded papers and downloads PDFs politely.
         """
-        papers = self.scraper_manager.fetch_candidates(search_query=query, limit=limit)
+        papers = self.scraper_manager.fetch_candidates(
+            search_query=query,
+            limit=limit,
+            only_undownloaded=only_undownloaded
+        )
         results = []
         for paper in papers:
             paper_id = self.db.save_paper(paper)
             paper["id"] = paper_id
-            eval_result = self.evaluator.evaluate(paper, self.config.get("filters", {}))
+            eval_result = self.evaluator.evaluate(paper, self.config.get("filters", {}), query=query)
             self.db.save_evaluation(paper_id, eval_result)
             paper.update(eval_result)
+            paper["is_downloaded"] = self.db.is_pdf_downloaded(paper_id)
             results.append(paper)
 
-        # Multi-threaded download for search results
-        if results:
+        # Multi-threaded download for qualified un-downloaded papers
+        to_download = [p for p in results if not p.get("is_downloaded") and p.get("pdf_url")]
+        if download_pdfs and to_download:
             self.downloader.download_batch(
-                results,
+                to_download,
                 on_download_complete=self._process_downloaded_pdf
             )
 
         # Refresh graph
-        self.graph_builder.export_interactive_html()
+        try:
+            self.graph_builder.export_interactive_html()
+        except Exception:
+            pass
+
         return sorted(results, key=lambda x: x.get("score", 0), reverse=True)
 
     def run_bulk_harvest(

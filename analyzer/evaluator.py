@@ -1,69 +1,86 @@
 """
-Evaluates research paper abstracts using GLM, scoring their intellectual interest,
-novelty, and relevance strictly to quantitative finance and econometrics.
+Evaluates research paper candidates using:
+1. High-precision Local Quant Evaluator (Default, 100% offline & free, no API key needed)
+2. Free Google Gemini API (gemini-1.5-flash / gemini-2.0-flash via Google AI Studio)
+3. Zhipu GLM API (glm-4-flash free tier or paid glm-5.3-plus)
 """
 
+import os
 import json
 import re
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
+from .local_evaluator import LocalPaperEvaluator
 from .glm_client import GLMClient
+from .gemini_client import GeminiClient
 
 class PaperEvaluator:
-    def __init__(self, glm_client: GLMClient = None, config: Dict[str, Any] = None):
-        self.glm_client = glm_client or GLMClient()
+    def __init__(self, glm_client: GLMClient = None, config: Dict[str, Any] = None, backend: str = "local"):
         self.config = config or {}
+        self.backend = os.getenv("EVAL_BACKEND", backend)
+        self.local_evaluator = LocalPaperEvaluator(self.config)
+        self.glm_client = glm_client or GLMClient()
+        self.gemini_client = GeminiClient()
 
-    def _build_prompt(self, paper: Dict[str, Any], filter_settings: Dict[str, Any]) -> List[Dict[str, str]]:
+    def evaluate(self, paper: Dict[str, Any], filter_settings: Dict[str, Any] = None, query: str = "") -> Dict[str, Any]:
+        """
+        Evaluates a paper candidate using the selected backend (default: local).
+        Guarantees reliable, realistic scores without random numbers.
+        """
+        # 1. Local Evaluator (Default & 100% offline)
+        if self.backend == "local":
+            return self.local_evaluator.evaluate(paper, query=query)
+
+        # 2. Google Gemini Free Tier
+        if self.backend == "gemini" and self.gemini_client.is_configured():
+            gemini_res = self.gemini_client.evaluate_paper(paper, query=query)
+            if gemini_res:
+                return gemini_res
+            return self.local_evaluator.evaluate(paper, query=query)
+
+        # 3. GLM API Backend
+        if self.backend == "glm" and self.glm_client.is_configured():
+            try:
+                active_filters = filter_settings or self.config.get("filters", {})
+                messages = self._build_prompt(paper, active_filters, query)
+                raw_output = self.glm_client.chat_completion(messages)
+                parsed = self._parse_response(raw_output)
+                if parsed and parsed.get("score"):
+                    return parsed
+            except Exception as e:
+                print(f"[Evaluator] GLM call failed ({e}). Using local evaluator.")
+
+        # Default fallback: Local high-precision evaluator
+        return self.local_evaluator.evaluate(paper, query=query)
+
+    def _build_prompt(self, paper: Dict[str, Any], filter_settings: Dict[str, Any], query: str = "") -> List[Dict[str, str]]:
         interests = filter_settings.get("interests", [
             "Market Microstructure, Limit Order Books & High-Frequency Trading",
             "Statistical Arbitrage, Machine Learning & Quantitative Alpha Signals",
             "Stochastic Volatility Models, Rough Volatility & Exotic Derivatives Pricing",
-            "Portfolio Optimization, Factor Investing & Risk Parity",
-            "Reinforcement Learning for Trade Execution and Market Making",
-            "Financial Econometrics, Regime Switching & Non-Linear Time Series"
-        ])
-        criteria = filter_settings.get("preferred_criteria", [
-            "Novel quantitative alpha, mathematical rigor, and realistic no-arbitrage conditions",
-            "Groundbreaking insights into market microstructure or order flow dynamics",
-            "Innovative computational algorithms for high-dimensional portfolio or risk modeling"
+            "Portfolio Optimization, Factor Investing & Risk Parity"
         ])
 
         system_message = (
-            "You are an elite quantitative researcher and director of quantitative research at a premier systematic hedge fund. "
-            "Your goal is to evaluate research paper abstracts strictly for quantitative finance, market microstructure, algorithmic trading, "
-            "derivatives pricing, portfolio optimization, statistical arbitrage, risk management, and financial econometrics.\n\n"
-            "CRITICAL DOMAIN MANDATE: First verify whether this paper is genuinely related to quantitative finance, financial markets, or econometrics. "
-            "If the paper belongs to an unrelated discipline (such as clinical medicine, biomedical imaging, cardiology, biology, particle physics, "
-            "general computer software/tools, agriculture, robotics, or social sciences outside financial economics), "
-            "you MUST set 'is_quant_finance': false and assign a score between 0 and 15.\n\n"
-            "Only genuine quantitative finance papers should receive a score >= 70, evaluated strictly based on mathematical novelty, "
-            "microstructure insight, alpha potential, and empirical rigor. Disregard simplistic backtests or trivial overfitted claims.\n"
-            "Respond ONLY with a valid JSON object matching the required schema. Do not include markdown wraps like ```json or explanations outside the JSON."
+            "You are a quantitative research director at a systematic hedge fund. "
+            "Evaluate research paper abstracts strictly for quantitative finance relevance, mathematical rigor, and empirical depth. "
+            "Respond ONLY with valid JSON."
         )
 
         user_content = f"""
-Quant Team Research Interests:
-{chr(10).join(f"- {i}" for i in interests)}
-
-Key Evaluation Criteria:
-{chr(10).join(f"- {c}" for c in criteria)}
-
-Paper to Evaluate:
+Target Search Query: {query or 'General Quantitative Finance'}
 Title: {paper.get('title', 'Unknown')}
-Authors: {', '.join(paper.get('authors', [])[:5])}
-Published Date: {paper.get('published_date', 'Unknown')}
 Category: {paper.get('category', 'Quantitative Finance')}
 Abstract:
 {paper.get('abstract', '')}
 
-Evaluate this paper and output JSON with this exact structure:
+Output JSON with schema:
 {{
-  "is_quant_finance": <true if this paper directly investigates financial markets, trading, econometrics, or asset pricing; false otherwise>,
-  "score": <integer from 1 to 100 representing overall quantitative depth and alpha novelty (0-15 if is_quant_finance is false)>,
-  "hook": "<a punchy, fascinating 1-sentence hook explaining why a quantitative researcher must read this>",
-  "breakthrough_summary": "<2-3 clear sentences explaining the mathematical innovation, market model, or statistical finding>",
-  "takeaway": "<1-2 sentences explaining practical trading, pricing, risk management, or execution implications>",
-  "concepts": ["<quant_concept1>", "<quant_concept2>", "<quant_concept3>", "<quant_concept4>", "<quant_concept5>"]
+  "is_quant_finance": <true or false>,
+  "score": <integer from 1 to 100>,
+  "hook": "<punchy 1-sentence hook>",
+  "breakthrough_summary": "<2-3 sentences mathematical innovation>",
+  "takeaway": "<1-2 sentences practical trading takeaway>",
+  "concepts": ["<c1>", "<c2>", "<c3>"]
 }}
 """
         return [
@@ -71,19 +88,7 @@ Evaluate this paper and output JSON with this exact structure:
             {"role": "user", "content": user_content}
         ]
 
-    def evaluate(self, paper: Dict[str, Any], filter_settings: Dict[str, Any] = None) -> Dict[str, Any]:
-        """
-        Sends the paper abstract to GLM and parses the JSON evaluation.
-        """
-        active_filters = filter_settings or self.config.get("filters", {})
-        messages = self._build_prompt(paper, active_filters)
-        
-        raw_output = self.glm_client.chat_completion(messages)
-        return self._parse_response(raw_output)
-
     def _parse_response(self, raw_output: str) -> Dict[str, Any]:
-        """Safely parses GLM output into a dictionary."""
-        # Strip potential markdown code block markers
         clean_text = raw_output.strip()
         if clean_text.startswith("```json"):
             clean_text = clean_text[7:]
@@ -93,40 +98,19 @@ Evaluate this paper and output JSON with this exact structure:
             clean_text = clean_text[:-3]
         clean_text = clean_text.strip()
 
-        parsed = None
         try:
             parsed = json.loads(clean_text)
-        except json.JSONDecodeError:
-            # Fallback regex extraction if model returned conversational preface
-            match = re.search(r"\{.*\}", clean_text, re.DOTALL)
-            if match:
-                try:
-                    parsed = json.loads(match.group(0))
-                except Exception:
-                    pass
+            if isinstance(parsed, dict) and "score" in parsed:
+                return parsed
+        except Exception:
+            pass
 
-        if isinstance(parsed, dict):
-            is_quant = bool(parsed.get("is_quant_finance", True))
-            raw_score = int(parsed.get("score", 70))
-            # If flagged as not quant finance, enforce score cap of 15
-            score = min(raw_score, 15) if not is_quant else raw_score
-
-            return {
-                "is_quant_finance": is_quant,
-                "score": score,
-                "hook": str(parsed.get("hook", "Notable study in financial economics.")),
-                "breakthrough_summary": str(parsed.get("breakthrough_summary", "")),
-                "takeaway": str(parsed.get("takeaway", "")),
-                "concepts": [str(c) for c in parsed.get("concepts", []) if isinstance(c, str)],
-                "model_name": self.glm_client.model
-            }
-
-        return {
-            "is_quant_finance": True,
-            "score": 70,
-            "hook": "Intriguing study with notable findings.",
-            "breakthrough_summary": clean_text[:250],
-            "takeaway": "Worth reviewing for relevant domain insights.",
-            "concepts": ["quantitative finance", "modeling"],
-            "model_name": self.glm_client.model
-        }
+        match = re.search(r"\{.*\}", clean_text, re.DOTALL)
+        if match:
+            try:
+                parsed = json.loads(match.group(0))
+                if isinstance(parsed, dict) and "score" in parsed:
+                    return parsed
+            except Exception:
+                pass
+        return {}

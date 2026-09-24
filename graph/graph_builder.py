@@ -43,7 +43,10 @@ class KnowledgeGraphBuilder:
         min_concept_degree: int = 1,
         top_k_similar: int = 3,
         sim_threshold: float = 0.20,
-        max_prevalence: float = 0.65
+        max_prevalence: float = 0.65,
+        only_downloaded: bool = False,
+        min_score: int = 0,
+        query: str = ""
     ) -> nx.Graph:
         """
         Constructs a mathematically principled research graph:
@@ -57,7 +60,21 @@ class KnowledgeGraphBuilder:
         """
         G = nx.Graph()
         papers = self.db.get_all_papers_for_graph()
-        entities = self.db.get_graph_entities()
+        if only_downloaded:
+            papers = [p for p in papers if self.db.is_pdf_downloaded(p["id"])]
+        if min_score > 0:
+            papers = [p for p in papers if int(p.get("score") or 0) >= min_score]
+        if query:
+            q_lower = query.strip().lower()
+            papers = [
+                p for p in papers
+                if q_lower in p.get("title", "").lower()
+                or q_lower in p.get("abstract", "").lower()
+                or any(q_lower in str(c).lower() for c in (p.get("concepts") or []))
+            ]
+
+        valid_pids = {p["id"] for p in papers}
+        entities = [ent for ent in self.db.get_graph_entities() if ent["paper_id"] in valid_pids]
 
         if not papers:
             return G
@@ -256,7 +273,7 @@ class KnowledgeGraphBuilder:
 
         return G
 
-    def export_interactive_html(self, min_concept_degree: int = 1) -> str:
+    def export_interactive_html(self, min_concept_degree: int = 1, only_downloaded: bool = False, min_score: int = 0, query: str = "") -> str:
         """
         Builds the optimized knowledge graph and generates a standalone,
         feature-complete Vis.js web application with:
@@ -266,7 +283,12 @@ class KnowledgeGraphBuilder:
         - Inspector sidebar
         - Full-featured Token Search & Footprint Engine
         """
-        G = self.build_graph(min_concept_degree=min_concept_degree)
+        G = self.build_graph(
+            min_concept_degree=min_concept_degree,
+            only_downloaded=only_downloaded,
+            min_score=min_score,
+            query=query
+        )
 
         nodes_data: List[Dict[str, Any]] = []
         for node_id, data in G.nodes(data=True):

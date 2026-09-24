@@ -37,11 +37,22 @@ class ScraperManager:
         self.arxiv = ArxivScraper()
         self.openalex = OpenAlexScraper()
 
-    def fetch_candidates(self, search_query: str = "", limit: int = 15) -> List[Dict[str, Any]]:
+    def fetch_candidates(
+        self,
+        search_query: str = "",
+        limit: int = 15,
+        only_undownloaded: bool = False,
+        include_all: bool = False
+    ) -> List[Dict[str, Any]]:
         """
         Fetches papers from both arXiv and OpenAlex based on user search query or configured topics.
         Strictly enforces quantitative finance categories and subfields.
-        Filters out any papers already ingested into the database.
+        
+        Args:
+            search_query: Target topic keyword (e.g. 'statistical arbitrage')
+            limit: Total candidate limit
+            only_undownloaded: If True, specifically returns papers that do NOT yet have a local PDF
+            include_all: If True, includes previously ingested papers annotated with their download status
         """
         filters_config = self.config.get("filters", {})
         arxiv_cats = filters_config.get(
@@ -53,8 +64,12 @@ class ScraperManager:
         candidates = []
         seen_ids = set()
 
-        # 1. Fetch from arXiv: Always enforce quant categories even with search query
-        arxiv_limit = max(limit // 2, 5)
+        # Allocate limits evenly between arXiv and OpenAlex
+        req_limit = max(limit, 10)
+        arxiv_limit = max(req_limit // 2, 6)
+        openalex_limit = max(req_limit // 2, 6)
+
+        # 1. Fetch from arXiv: High-precision relevance & phrase search
         arxiv_papers = self.arxiv.search(
             query=search_query,
             categories=arxiv_cats,
@@ -62,24 +77,45 @@ class ScraperManager:
         )
         for p in arxiv_papers:
             ext_id = p["external_id"]
-            if ext_id not in seen_ids and not self.db.paper_exists(ext_id) and is_quant_paper(p):
-                seen_ids.add(ext_id)
-                candidates.append(p)
+            if ext_id in seen_ids or not is_quant_paper(p):
+                continue
+            seen_ids.add(ext_id)
 
-        # 2. Fetch from OpenAlex: Strictly constrained to Finance and Econometrics subfields (2003, 2002)
-        openalex_limit = max(limit // 2, 5)
+            is_downloaded = self.db.is_pdf_downloaded(ext_id)
+            p["is_downloaded"] = is_downloaded
+            p["download_status"] = "downloaded" if is_downloaded else "not_downloaded"
+
+            if only_undownloaded and is_downloaded:
+                continue
+            if not include_all and not only_undownloaded and self.db.paper_exists(ext_id):
+                continue
+
+            candidates.append(p)
+
+        # 2. Fetch from OpenAlex
         oa_query = search_query if search_query else (interests[0] if interests else "Quantitative Finance")
         openalex_papers = self.openalex.search(
             query=oa_query,
-            min_citations=20 if not search_query else 0,
+            min_citations=0 if search_query else 20,
             subfields=["2003", "2002"],
             max_results=openalex_limit
         )
         for p in openalex_papers:
             ext_id = p["external_id"]
-            if ext_id not in seen_ids and not self.db.paper_exists(ext_id) and is_quant_paper(p):
-                seen_ids.add(ext_id)
-                candidates.append(p)
+            if ext_id in seen_ids or not is_quant_paper(p):
+                continue
+            seen_ids.add(ext_id)
+
+            is_downloaded = self.db.is_pdf_downloaded(ext_id)
+            p["is_downloaded"] = is_downloaded
+            p["download_status"] = "downloaded" if is_downloaded else "not_downloaded"
+
+            if only_undownloaded and is_downloaded:
+                continue
+            if not include_all and not only_undownloaded and self.db.paper_exists(ext_id):
+                continue
+
+            candidates.append(p)
 
         return candidates[:limit]
 

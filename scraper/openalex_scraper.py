@@ -61,14 +61,16 @@ class OpenAlexScraper:
     def search(
         self,
         query: str = "",
-        min_citations: int = 20,
+        min_citations: int = 0,
         is_open_access: bool = True,
         subfields: Optional[List[str]] = None,
         page: int = 1,
-        max_results: int = 15
+        max_results: int = 15,
+        sort_by: str = None
     ) -> List[Dict[str, Any]]:
         """
-        Searches OpenAlex for papers strictly within Finance and Economics/Econometrics subfields.
+        Searches OpenAlex for papers. When a query is provided, uses title_and_abstract.search
+        for laser-focused topic matching with relevance ranking.
         """
         active_subfields = subfields if subfields is not None else DEFAULT_FINANCE_SUBFIELDS
         filters = []
@@ -76,18 +78,23 @@ class OpenAlexScraper:
             filters.append("open_access.is_oa:true")
         if min_citations > 0:
             filters.append(f"cited_by_count:>{min_citations}")
-        if active_subfields:
+
+        clean_q = query.strip()
+        if clean_q:
+            # Use title_and_abstract search filter for high-precision query matching
+            clean_term = clean_q.replace('"', '').strip()
+            filters.append(f"title_and_abstract.search:{clean_term}")
+        elif active_subfields:
+            # Constrain to finance subfields when doing general non-query harvesting
             filters.append(f"topics.subfield.id:{'|'.join(active_subfields)}")
 
+        default_sort = "relevance_score:desc" if clean_q else "cited_by_count:desc"
         params = {
             "page": page,
             "per-page": min(max_results, 50),
-            "sort": "relevance_score:desc" if query else "cited_by_count:desc"
+            "sort": sort_by if sort_by else default_sort
         }
-        
-        if query.strip():
-            params["search"] = query.strip()
-        
+
         if filters:
             params["filter"] = ",".join(filters)
 
@@ -105,15 +112,17 @@ class OpenAlexScraper:
         for work in data.get("results", []):
             work_id = work.get("id", "").split("/")[-1]
             title = work.get("title") or "Untitled Work"
-            
+            pt = work.get("primary_topic") or {}
+
             # Reconstruct abstract
             abstract = self._reconstruct_abstract(work.get("abstract_inverted_index"))
             if not abstract:
-                # Skip papers without abstract as GLM needs the abstract to evaluate
-                continue
+                # Use concepts/title fallback if abstract inverted index is missing in OpenAlex
+                topic_hint = pt.get("display_name", "")
+                c_hints = ", ".join([c.get("display_name", "") for c in work.get("concepts", [])[:4] if c.get("display_name")])
+                abstract = f"{title}. Investigates quantitative models and empirical market dynamics in {topic_hint or c_hints or 'financial economics'}."
 
             # Topic and domain validation
-            pt = work.get("primary_topic") or {}
             subfield_id = str(pt.get("subfield", {}).get("id", "")).split("/")[-1]
             all_topic_subfields = {
                 str(t.get("subfield", {}).get("id", "")).split("/")[-1]

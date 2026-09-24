@@ -110,6 +110,84 @@ class Database:
             cursor.execute("SELECT 1 FROM papers WHERE external_id = ?", (external_id,))
             return cursor.fetchone() is not None
 
+    def get_paper_by_external_id(self, external_id: str):
+        """Retrieves paper record by external ID, including evaluation and local PDF status."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+            SELECT p.*, e.score, e.hook, e.breakthrough_summary, e.takeaway, e.concepts
+            FROM papers p
+            LEFT JOIN evaluations e ON p.id = e.paper_id
+            WHERE p.external_id = ?
+            ORDER BY e.id DESC LIMIT 1
+            """, (external_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            data = dict(row)
+            if data.get("authors") and str(data["authors"]).startswith("["):
+                try:
+                    data["authors"] = json.loads(data["authors"])
+                except Exception:
+                    pass
+            if data.get("concepts"):
+                try:
+                    data["concepts"] = json.loads(data["concepts"])
+                except Exception:
+                    pass
+            return data
+
+    def is_pdf_downloaded(self, external_id_or_paper_id) -> bool:
+        """
+        Verifies whether a paper's PDF has actually been downloaded and exists on disk with valid size.
+        Accepts either an integer internal paper_id or string external_id.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if isinstance(external_id_or_paper_id, int) or (isinstance(external_id_or_paper_id, str) and str(external_id_or_paper_id).isdigit()):
+                cursor.execute("SELECT id, local_pdf_path FROM papers WHERE id = ?", (int(external_id_or_paper_id),))
+            else:
+                cursor.execute("SELECT id, local_pdf_path FROM papers WHERE external_id = ?", (str(external_id_or_paper_id),))
+            row = cursor.fetchone()
+            if not row:
+                return False
+
+            pid = row["id"]
+            local_path = row["local_pdf_path"]
+
+            # Check explicit local path if set
+            if local_path and os.path.exists(local_path) and os.path.getsize(local_path) > 3000:
+                return True
+
+            # Also check convention path: data/pdfs/paper_{pid}.pdf
+            pdf_dir = os.path.join(os.path.dirname(os.path.abspath(self.db_path)), "pdfs")
+            conv_path = os.path.join(pdf_dir, f"paper_{pid}.pdf")
+            if os.path.exists(conv_path) and os.path.getsize(conv_path) > 3000:
+                cursor.execute("UPDATE papers SET local_pdf_path = ? WHERE id = ?", (conv_path, pid))
+                conn.commit()
+                return True
+
+            return False
+
+    def get_download_status(self, external_id: str):
+        """
+        Returns rich download & ingestion status for an external paper candidate:
+        - status: 'downloaded' (PDF exists locally), 'metadata_only' (in DB but no PDF), or 'new' (not in DB)
+        """
+        record = self.get_paper_by_external_id(external_id)
+        if not record:
+            return {"status": "new", "paper_id": None, "score": None, "local_pdf_path": None}
+
+        pid = record["id"]
+        has_pdf = self.is_pdf_downloaded(pid)
+        return {
+            "status": "downloaded" if has_pdf else "metadata_only",
+            "paper_id": pid,
+            "score": record.get("score"),
+            "local_pdf_path": record.get("local_pdf_path"),
+            "record": record
+        }
+
     def save_paper(self, paper: Dict[str, Any]) -> int:
         """
         Saves a paper to the database if it doesn't already exist.
@@ -357,6 +435,41 @@ class Database:
 
             conn.commit()
             return updated_count
+
+    def reset_database(self, backup: bool = True, clear_pdfs: bool = False) -> str:
+        """
+        Clears all papers, evaluations, tokens, and graph entities to allow starting completely from scratch.
+        Creates an automatic timestamped backup first.
+        """
+        import shutil
+        from datetime import datetime
+        backup_path = ""
+        if backup and os.path.exists(self.db_path):
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = f"{self.db_path}.backup_{timestamp}"
+            shutil.copy2(self.db_path, backup_path)
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM evaluations")
+            cursor.execute("DELETE FROM pdf_tokens")
+            cursor.execute("DELETE FROM graph_entities")
+            cursor.execute("DELETE FROM discord_history")
+            cursor.execute("DELETE FROM papers")
+            conn.commit()
+            cursor.execute("VACUUM")
+
+        if clear_pdfs:
+            pdf_dir = os.path.join(os.path.dirname(os.path.abspath(self.db_path)), "pdfs")
+            if os.path.exists(pdf_dir):
+                for f in os.listdir(pdf_dir):
+                    if f.endswith(".pdf"):
+                        try:
+                            os.remove(os.path.join(pdf_dir, f))
+                        except Exception:
+                            pass
+
+        return backup_path
 
     def get_stats(self) -> Dict[str, Any]:
         """Provides summary metrics of the database corpus."""
